@@ -6,6 +6,8 @@
 
 [RM社区 - 开源报告](https://bbs.robomaster.com/article/1883295) (如果加载不出来可能是在审核中)
 
+<img width="502" height="323" alt="视频封面" src="https://github.com/user-attachments/assets/a72e1683-be42-44d2-a3ae-7686517728fd" />
+
 ## 环境要求
 
 - Ubuntu Linux
