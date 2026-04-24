@@ -1,0 +1,85 @@
+#  Hik Camera 节点参数
+hik_camera:
+  ros__parameters:
+    exposure_time: 12000.0     # 曝光时间（单位：微秒）
+    gain: 10.0                 # 增益（放大亮度）
+    use_sensor_data_qos: true  # 是否使用 sensor_data QoS（低延迟）
+    camera_name: "hik_camera"  # 相机名称（用于CameraInfo匹配）
+    camera_info_url: "package://hik_camera/config/camera.yaml" # 相机标定文件路径
+
+#  编码器节点参数（核心）
+video_encoder:
+  ros__parameters:
+    input_topic: /image_raw    # 输入图像话题（必须和 Hik Camera 输出一致）
+    target_bitrate: 115        # 目标比特率（kbps）
+    x264_preset: veryslow      # x264编码预设（ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow）
+    output_fps: 50             # 输出帧率
+    enable_display: true       # 是否开启编码端显示窗口
+    #  调试图像保存
+    debug_dump_enable: false           # 是否保存调试图像
+    debug_dump_every_n_frames: 1       # 每N帧保存一次
+    debug_dump_save_raw: false         # 保存原始图像
+    debug_dump_save_roi: true          # 保存ROI区域
+    debug_dump_save_static: false      # 保存静态背景
+    debug_dump_save_final: true        # 保存最终输出
+    debug_dump_dir: ""                 # 保存路径（launch里动态给）
+  
+    #  ROI / 分辨率
+    crop_size: 200                     # 中心裁剪区域大小
+    output_size: 300                   # 编码输出分辨率
+
+    #  运动检测参数
+    motion_threshold: 14               # 运动检测阈值
+    motion_erode_px: 2                 # 腐蚀像素
+    motion_dilate_px: 6                # 膨胀像素
+    motion_trail_frames: 20            # 拖影历史帧数（用于运动轨迹）
+    trail_disable_motion_ratio: 0.15   # 当运动比例超过该值时关闭拖影
+
+    #  背景建模
+    bg_update_alpha: 0.01              # 背景更新速度
+    bg_blur_sigma: 0.1                 # 静态区域模糊强度
+
+    # 中心保护区域（不做压缩）
+    center_clear_size: 150
+
+    # 是否强制灰度图(只保留中间受保护区域的色彩)
+    force_monochrome: true
+
+    #  带宽控制
+    bandwidth_limit_kbytes: 15.0       # 最大带宽（kB/s）
+    bandwidth_window_s: 1.0            # 滑动窗口时间
+
+    # 最大发送延迟
+    max_tx_delay_s: 0.5
+    
+    use_mqtt: true                     # 是否使用 MQTT 发送数据
+    mqtt_ip: 127.0.0.1 # 192.168.12.1               # MQTT 服务器 IP
+    mqtt_port: 3333                     # MQTT 服务器端口
+    mqtt_topic: "CustomByteBlock"       # MQTT 话题  
+    robot_id: "1"                       # 机器人 ID（用于 MQTT 消息）
+
+
+ 
+#  解码节点参数
+video_decoder:
+  ros__parameters:
+    topic: /video_stream   # 订阅视频流话题(ROS2用)
+    display: true          # 是否显示窗口
+    width: 300             # 解码分辨率（必须和编码一致）
+    height: 300
+    display_scale: 2       # 显示放大倍数
+    crosshair_offset_x: 0  #  准星参数
+    crosshair_offset_y: 0
+    crosshair_width: 1
+
+    #  调试保存
+    debug_dump_enable: false
+    debug_dump_every_n_frames: 1
+    debug_dump_save_decoder: true
+    debug_dump_dir: ""
+
+    use_mqtt: true
+    mqtt_ip: 127.0.0.1 # 192.168.12.1
+    mqtt_port: 3333
+    mqtt_topic: "CustomByteBlock"
+    robot_id: "decoder1"

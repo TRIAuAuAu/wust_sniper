@@ -1,5 +1,5 @@
 #include "doorlock_sniper/video_encoder_node.hpp"
-#include <cv_bridge/cv_bridge.hpp>
+#include <cv_bridge/cv_bridge.h>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <algorithm>
 #include <cctype>
@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
+#include "video_stream.pb.h"
 
 namespace doorlock_sniper
 {
@@ -22,14 +23,20 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   frame_count_(0),
   display_running_(false)    // 最后初始化
 {
-  constexpr int kVideoPacketBytes = 150;
+  constexpr int kVideoPacketBytes = PAYLOAD_SIZE;
+
+  param_use_mqtt_ = this->declare_parameter("use_mqtt", false);
+  param_mqtt_ip_ = this->declare_parameter("mqtt_ip", "192.168.12.1");
+  param_mqtt_port_ = this->declare_parameter("mqtt_port", 3333);
+  param_mqtt_topic_ = this->declare_parameter("mqtt_topic", "CustomByteBlock");
+  param_robot_id_ = this->declare_parameter("robot_id", std::string("1"));
+
 
   param_input_topic_ = this->declare_parameter("input_topic", "/image_raw");
   param_crop_size_ = this->declare_parameter("crop_size", 800);
   param_output_size_ = this->declare_parameter("output_size", 400);
   param_output_fps_ = this->declare_parameter("output_fps", 60);
   param_target_bitrate_ = this->declare_parameter("target_bitrate", 40);
-  param_packet_size_ = this->declare_parameter("packet_size", kVideoPacketBytes);
   param_static_simplify_ = this->declare_parameter("static_simplify", true);
   param_motion_threshold_ = this->declare_parameter("motion_threshold", 14);
   param_motion_erode_px_ = this->declare_parameter("motion_erode_px", 1);
@@ -60,14 +67,6 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   if (param_output_fps_ > 60) {
     RCLCPP_WARN(this->get_logger(), "output_fps=%d too high, clamp to 60", param_output_fps_);
     param_output_fps_ = 60;
-  }
-
-  if (param_packet_size_ != kVideoPacketBytes) {
-    RCLCPP_WARN(
-      this->get_logger(),
-      "VideoPacket.msg payload is fixed to %d bytes, override packet_size %d -> %d",
-      kVideoPacketBytes, param_packet_size_, kVideoPacketBytes);
-    param_packet_size_ = kVideoPacketBytes;
   }
 
   if (param_target_bitrate_ < 200) {
@@ -198,12 +197,16 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
     display_thread_ = std::thread(&VideoEncoderNode::display_loop, this);
   }
 
+  if (param_use_mqtt_) {
+      init_mqtt();
+  }
+
   RCLCPP_INFO(this->get_logger(), 
     "VideoEncoderNode: crop=%d -> %dx%d@%dfps %dkbps, packets=%dbytes, static_simplify=%s, "
     "motion_open(y=%d,x=%d), trail=%df disable@%.0f%% mono=%s, "
     "tx_limit=%.2fkB/s@%.2fs max_delay=%.2fs x264_preset=%s",
     param_crop_size_, param_output_size_, param_output_size_,
-    param_output_fps_, param_target_bitrate_, param_packet_size_,
+    param_output_fps_, param_target_bitrate_, PAYLOAD_SIZE,
     param_static_simplify_ ? "on" : "off",
     param_motion_erode_px_, param_motion_dilate_px_,
     param_motion_trail_frames_, param_trail_disable_motion_ratio_ * 100.0,
@@ -255,7 +258,6 @@ void VideoEncoderNode::initialize_gstreamer()
   gst_caps_unref(caps);
 
   const bool low_bitrate_mode = (param_target_bitrate_ <= 80);
-  const int key_int = std::max(8 * param_output_fps_, 30);
   const int default_speed_preset = low_bitrate_mode ? 9 : 3;  // veryslow / veryfast
   int speed_preset = default_speed_preset;
   std::string preset_lower = param_x264_preset_;
@@ -283,41 +285,20 @@ void VideoEncoderNode::initialize_gstreamer()
     }
   }
 
-  if (low_bitrate_mode) {
-    g_object_set(
-      G_OBJECT(encoder),
+  g_object_set(G_OBJECT(encoder),
       "bitrate", param_target_bitrate_,
       "speed-preset", speed_preset,
-      "tune", 0,                  // no tuning, favor efficiency
+      "tune", 0x00000004,          // zerolatency
       "byte-stream", TRUE,
-      "key-int-max", key_int,     // 减少 I 帧开销
-      "bframes", 4,
-      "rc-lookahead", 40,
-      "sync-lookahead", 20,
-      "sliced-threads", FALSE,
-      "ref", 5,
-      "aud", TRUE,
-      "vbv-buf-capacity", 500,
-      "option-string", "repeat-headers=1:scenecut=0:aq-mode=2:aq-strength=1.2:mbtree=1:qcomp=0.75:subme=8:trellis=2:deblock=1,1:force-cfr=1",
-      "pass", 0,
-      nullptr);
-  } else {
-    g_object_set(
-      G_OBJECT(encoder),
-      "bitrate", param_target_bitrate_,
-      "speed-preset", speed_preset,
-      "tune", 0x00000004,         // zerolatency
-      "byte-stream", TRUE,
-      "key-int-max", 2 * param_output_fps_,
+      "key-int-max", param_output_fps_,   // I帧间隔 2 秒（100帧）
       "bframes", 0,
       "rc-lookahead", 0,
       "sync-lookahead", 0,
       "sliced-threads", TRUE,
+      "ref", 1,
       "aud", TRUE,
-      "option-string", "repeat-headers=1:scenecut=0:ref=1:force-cfr=1",
-      "pass", 0,
-      nullptr);
-  }
+      "option-string", "repeat-headers=1:scenecut=0:force-cfr=1",
+      "pass", 0, nullptr);
 
   // 确保下游看到可流式重组的 Annex-B 字节流，并周期重复 SPS/PPS
   g_object_set(
@@ -390,11 +371,6 @@ cv::Mat VideoEncoderNode::preprocess_image(
     resized.copyTo(*roi_downsample);
   }
   cv::Mat working = resized;
-  if (param_force_monochrome_) {
-    cv::Mat gray_full;
-    cv::cvtColor(working, gray_full, cv::COLOR_BGR2GRAY);
-    cv::cvtColor(gray_full, working, cv::COLOR_GRAY2BGR);
-  }
 
   if (!param_static_simplify_) {
     if (static_removed) {
@@ -448,22 +424,52 @@ cv::Mat VideoEncoderNode::preprocess_image(
     cv::rectangle(motion_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255), cv::FILLED);
   }
 
-  cv::Mat static_base = working.clone();
-  if (!param_force_monochrome_ && param_target_bitrate_ <= 80) {
-    cv::Mat gray_bg;
-    cv::cvtColor(static_base, gray_bg, cv::COLOR_BGR2GRAY);
-    cv::cvtColor(gray_bg, static_base, cv::COLOR_GRAY2BGR);
+  // 中心区域保护：不做静态模糊（原有功能保留）
+  if (param_center_clear_size_ > 0) {
+    const int clear_size = std::min({param_center_clear_size_, working.cols, working.rows});
+    const int x0 = std::max(0, working.cols / 2 - clear_size / 2);
+    const int y0 = std::max(0, working.rows / 2 - clear_size / 2);
+    const int cw = std::min(clear_size, working.cols - x0);
+    const int ch = std::min(clear_size, working.rows - y0);
+    cv::rectangle(motion_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255), cv::FILLED);
   }
+
+  //  新增：决定彩色覆盖的掩码 
+  cv::Mat color_mask;   // 255 的区域显示彩色
+  if (param_force_monochrome_) {
+      // 强制灰度时，只保留中心矩形内的彩色
+      if (param_center_clear_size_ > 0) {
+          color_mask = cv::Mat::zeros(working.size(), CV_8UC1);
+          const int clear_size = std::min({param_center_clear_size_, working.cols, working.rows});
+          const int x0 = std::max(0, working.cols / 2 - clear_size / 2);
+          const int y0 = std::max(0, working.rows / 2 - clear_size / 2);
+          const int cw = std::min(clear_size, working.cols - x0);
+          const int ch = std::min(clear_size, working.rows - y0);
+          cv::rectangle(color_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255), cv::FILLED);
+      } else {
+          // 没有设置中心保护区，则全部黑白
+          color_mask = cv::Mat::zeros(working.size(), CV_8UC1);
+      }
+  } else {
+      // 不开启灰度，按原有运动掩码覆盖彩色
+      color_mask = motion_mask;
+  }
+
+  // 背景灰度化 + 模糊 
+  cv::Mat static_base = working.clone();
+  if (param_force_monochrome_) {
+      cv::Mat gray_bg;
+      cv::cvtColor(static_base, gray_bg, cv::COLOR_BGR2GRAY);
+      cv::cvtColor(gray_bg, static_base, cv::COLOR_GRAY2BGR);
+  }
+
   cv::Mat blurred_static;
-  cv::GaussianBlur(
-    static_base,
-    blurred_static,
-    cv::Size(),
-    std::max(0.0, param_bg_blur_sigma_),
-    std::max(0.0, param_bg_blur_sigma_));
+  double safe_sigma = std::max(0.1, param_bg_blur_sigma_);
+  cv::GaussianBlur(static_base, blurred_static, cv::Size(), safe_sigma, safe_sigma);
 
   cv::Mat focused = blurred_static.clone();
-  working.copyTo(focused, motion_mask);
+  // 用选定的掩码覆盖彩色区域
+  working.copyTo(focused, color_mask);
   if (static_removed) {
     focused.copyTo(*static_removed);
   }
@@ -565,12 +571,11 @@ void VideoEncoderNode::push_frame_to_gstreamer(const cv::Mat & frame)
   gst_buffer_unref(buffer);
 }
 
-// 150B 分包 + 带宽窗口限速 + 队列时延上限
+// 300B 分包 + 带宽窗口限速 + 队列时延上限
 void VideoEncoderNode::pull_stream_and_packetize()
 {
   if (!appsink_) return;
-
-  const size_t packet_bytes = static_cast<size_t>(param_packet_size_);
+  const size_t packet_bytes = PAYLOAD_SIZE;
   const int64_t window_ns = static_cast<int64_t>(param_bandwidth_window_s_ * 1e9);
   const size_t window_limit_bytes = static_cast<size_t>(
     param_bandwidth_limit_kbytes_ * 1000.0 * param_bandwidth_window_s_);
@@ -612,17 +617,42 @@ void VideoEncoderNode::pull_stream_and_packetize()
         pkt.sequence_id = packet_sequence_id_++;
         pkt.timestamp_ns = now_ns;
 
-        pkt.data.fill(0);
-        memcpy(pkt.data.data(), stream_buffer_.data(), param_packet_size_);
+        size_t copy_size = std::min(stream_buffer_.size(), (size_t)PAYLOAD_SIZE);
 
-        packet_pub_->publish(pkt);
+        pkt.data.fill(0);
+        memcpy(pkt.data.data(), stream_buffer_.data(), copy_size);
+
+        if (param_use_mqtt_ && mqtt_client_ && mqtt_client_->is_connected()) {
+            // 组装 300 字节完整包：18 字节 PacketHeader + 282 字节 H.264 载荷
+            std::vector<uint8_t> mqtt_buf(MAX_PACKET_SIZE);  // size = 300
+            PacketHeader hdr = make_header(pkt.sequence_id, pkt.timestamp_ns,
+                                          static_cast<uint16_t>(PAYLOAD_SIZE));
+            std::memcpy(mqtt_buf.data(), &hdr, HEADER_SIZE);               // 偏移 0..17
+            std::memcpy(mqtt_buf.data() + HEADER_SIZE,
+                        pkt.data.data(), PAYLOAD_SIZE);                    // 偏移 18..299
+
+            doorlock_sniper::CustomByteBlock proto;
+            proto.set_data(mqtt_buf.data(), MAX_PACKET_SIZE);
+
+            std::string out;
+            proto.SerializeToString(&out);
+
+            mqtt::message_ptr msg = mqtt::make_message(param_mqtt_topic_, out);
+            msg->set_qos(0);
+            mqtt_client_->publish(msg);
+        }
+        else
+        {
+           packet_pub_->publish(pkt);
+        }
+
         sent_window_.emplace_back(now_ns, packet_bytes);
         sent_window_bytes_ += packet_bytes;
 
         memmove(stream_buffer_.data(), 
-                stream_buffer_.data() + param_packet_size_,
-                stream_buffer_.size() - param_packet_size_);
-        stream_buffer_.resize(stream_buffer_.size() - param_packet_size_);
+                stream_buffer_.data() + PAYLOAD_SIZE,
+                stream_buffer_.size() - PAYLOAD_SIZE);
+        stream_buffer_.resize(stream_buffer_.size() - PAYLOAD_SIZE);
       }
 
       // 排队时延上限：防止突发造成长延时。超限时丢弃旧数据。
@@ -750,6 +780,33 @@ void VideoEncoderNode::display_loop()
   cv::destroyWindow("Doorlock Sniper");
 }
 
+void VideoEncoderNode::init_mqtt()
+{
+  std::string server = "tcp://" + param_mqtt_ip_ + ":" + std::to_string(param_mqtt_port_);
+  mqtt_client_ = std::make_unique<mqtt::async_client>(server, param_robot_id_);
+
+  mqtt_opts_.set_keep_alive_interval(20);
+  mqtt_opts_.set_clean_session(true);
+
+  try {
+    mqtt_client_->connect(mqtt_opts_)->wait();
+    RCLCPP_INFO(this->get_logger(), "MQTT connected");
+  } catch (const mqtt::exception &e) {
+    RCLCPP_ERROR(this->get_logger(), "MQTT connect failed: %s", e.what());
+  }
+}
+
+PacketHeader VideoEncoderNode::make_header(
+  uint64_t seq,
+  uint64_t ts,
+  uint16_t size)
+{
+  PacketHeader h;
+  h.sequence_id = seq;
+  h.timestamp_ns = ts;
+  h.payload_size = size;
+  return h;
+}
 } // namespace doorlock_sniper
 
 RCLCPP_COMPONENTS_REGISTER_NODE(doorlock_sniper::VideoEncoderNode)

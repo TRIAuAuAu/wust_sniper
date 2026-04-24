@@ -12,11 +12,25 @@
 #include <atomic>
 #include <vector>
 #include <deque>
+#include <mqtt/async_client.h>
+#include <mqtt/connect_options.h>
 
 #include "doorlock_sniper/msg/video_packet.hpp"
 
 namespace doorlock_sniper
 {
+
+#pragma pack(push, 1)
+struct PacketHeader {
+  uint64_t sequence_id;
+  uint64_t timestamp_ns;
+  uint16_t payload_size;
+};
+#pragma pack(pop)
+static_assert(sizeof(PacketHeader) == 18);
+constexpr int MAX_PACKET_SIZE = 300;
+constexpr int HEADER_SIZE = sizeof(PacketHeader); // 18
+constexpr int PAYLOAD_SIZE = MAX_PACKET_SIZE - HEADER_SIZE; // 282
 
 class VideoEncoderNode : public rclcpp::Node
 {
@@ -84,7 +98,6 @@ private:
   int param_output_size_ = 400;
   int param_output_fps_ = 60;
   int param_target_bitrate_ = 40;
-  int param_packet_size_ = 150;
   bool param_static_simplify_ = true;
   int param_motion_threshold_ = 14;
   int param_motion_erode_px_ = 1;
@@ -108,6 +121,22 @@ private:
   std::string param_input_topic_;
   std::string param_x264_preset_ = "auto";
   std::string param_debug_dump_dir_ = "sniper_debug_imgs";
+
+
+  // MQTT 相关
+  std::unique_ptr<mqtt::async_client> mqtt_client_;
+  mqtt::connect_options mqtt_opts_;
+  bool param_use_mqtt_ = false;
+  std::string param_mqtt_ip_;
+  int param_mqtt_port_;
+  std::string param_mqtt_topic_;
+  std::string param_robot_id_; 
+  void init_mqtt();
+  PacketHeader make_header(
+  uint64_t seq,
+  uint64_t ts,
+  uint16_t size);
+  
 };
 
 } // namespace doorlock_sniper

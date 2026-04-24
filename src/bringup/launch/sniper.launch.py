@@ -1,8 +1,13 @@
+import os
+import yaml
 from launch import LaunchDescription
 from launch_ros.actions import ComposableNodeContainer, Node
+from ament_index_python.packages import get_package_share_directory
 from launch_ros.descriptions import ComposableNode
 from pathlib import Path
 
+node_params = os.path.join(
+    get_package_share_directory('bringup'), 'config', 'node_params.yaml')
 
 def generate_launch_description():
     launch_path = Path(__file__).resolve()
@@ -14,12 +19,12 @@ def generate_launch_description():
     
     debug_dump_dir = str(project_root / 'sniper_debug_imgs')  # 调试图片保存目录
     debug_dump_enable = False          # 调试开关：每N帧保存5个窗口画面
-    debug_dump_every_n_frames = 1     # 调试保存间隔(帧)
+    debug_dump_every_n_frames = 1      # 调试保存间隔(帧)
     dump_save_raw = False              # 保存编码端 Raw 窗口
-    dump_save_roi = True              # 保存编码端 ROI 窗口
+    dump_save_roi = True               # 保存编码端 ROI 窗口
     dump_save_static = False           # 保存编码端 Static 窗口
-    dump_save_final = True            # 保存编码端 Final 窗口
-    dump_save_decoder = True          # 保存解码端窗口
+    dump_save_final = True             # 保存编码端 Final 窗口
+    dump_save_decoder = True           # 保存解码端窗口
 
     # 码率策略（单位：kB/s）
     target_bitrate_kbytes = 10.0       # 目标编码码率
@@ -41,7 +46,8 @@ def generate_launch_description():
                 name='hik_camera',
                 parameters=[
                     {'exposure_time': 12000.0},  # 曝光时间(us)
-                    {'gain': 10.0}               # 模拟增益
+                    {'gain': 10.0},               # 模拟增益
+                    node_params
                 ],
                 extra_arguments=[{'use_intra_process_comms': True}]  # 启用进程内零拷贝
             ),
@@ -77,7 +83,8 @@ def generate_launch_description():
                     {'force_monochrome': False},                         # 强制全画面灰度
                     {'bandwidth_limit_kbytes': hard_max_bitrate_kbytes}, # 发送硬上限(kB/s)
                     {'bandwidth_window_s': 2.0},                         # 限速滑动窗口时长(s)
-                    {'max_tx_delay_s': 1.0}                              # 发送队列最大允许时延(s)
+                    {'max_tx_delay_s': 1.0},                             # 发送队列最大允许时延(s)
+                    node_params
                 ],
                 extra_arguments=[{'use_intra_process_comms': True}]      # 启用进程内零拷贝
             )
@@ -102,7 +109,8 @@ def generate_launch_description():
             {'debug_dump_enable': debug_dump_enable},            # 开启后每N帧保存解码窗口画面
             {'debug_dump_every_n_frames': debug_dump_every_n_frames},  # 解码端保存间隔(帧)
             {'debug_dump_save_decoder': dump_save_decoder},      # 解码端窗口保存开关
-            {'debug_dump_dir': debug_dump_dir}                  # 调试图片根目录
+            {'debug_dump_dir': debug_dump_dir},                  # 调试图片根目录
+            node_params
         ],
         output='screen',
         emulate_tty=True,

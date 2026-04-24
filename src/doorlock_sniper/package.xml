@@ -6,7 +6,7 @@
     Doorlock sniper system - Video encoding node with H264 compression and chunking.
     Composable node for zero-copy intra-process communication with camera driver.
   </description>
-  <maintainer email="dev@example.com">developer</maintainer>
+  <maintainer email="auauau@wust.edu.cn">developer</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -31,6 +31,11 @@
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+
+  <depend>protobuf</depend>
+  <buildtool_depend>protobuf</buildtool_depend>
+  <exec_depend>libpaho-mqttpp3-dev</exec_depend>
+  <exec_depend>libpaho-mqtt3a-dev</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
