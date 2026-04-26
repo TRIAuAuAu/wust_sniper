@@ -14,8 +14,9 @@
 #include <deque>
 #include <mqtt/async_client.h>
 #include <mqtt/connect_options.h>
-
+#include <serial_driver/serial_driver.hpp>
 #include "doorlock_sniper/msg/video_packet.hpp"
+#include "packet.hpp"
 
 namespace doorlock_sniper
 {
@@ -137,6 +138,14 @@ private:
   uint64_t ts,
   uint16_t size);
   
+  // 串口相关
+  bool param_serial_output_ = false;
+  std::string param_serial_port_;
+  int param_baud_rate_ = 115200;
+  std::shared_ptr<drivers::common::IoContext> serial_ctx_;            // 管理 asio
+  std::unique_ptr<drivers::serial_driver::SerialDriver> serial_driver_;
+  std::unique_ptr<drivers::serial_driver::SerialPortConfig> serial_config_;
+  void init_serial();
 };
 
 } // namespace doorlock_sniper

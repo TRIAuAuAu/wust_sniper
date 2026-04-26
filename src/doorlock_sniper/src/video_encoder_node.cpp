@@ -23,14 +23,17 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   frame_count_(0),
   display_running_(false)    // 最后初始化
 {
-  constexpr int kVideoPacketBytes = PAYLOAD_SIZE;
-
+  // mqtt
   param_use_mqtt_ = this->declare_parameter("use_mqtt", false);
   param_mqtt_ip_ = this->declare_parameter("mqtt_ip", "192.168.12.1");
   param_mqtt_port_ = this->declare_parameter("mqtt_port", 3333);
   param_mqtt_topic_ = this->declare_parameter("mqtt_topic", "CustomByteBlock");
   param_robot_id_ = this->declare_parameter("robot_id", std::string("1"));
 
+ // serial_driver
+  param_serial_output_ = this->declare_parameter("serial_output", false);
+  param_serial_port_   = this->declare_parameter("serial_port", "/dev/ttyACM0");
+  param_baud_rate_     = this->declare_parameter("baud_rate", 115200);
 
   param_input_topic_ = this->declare_parameter("input_topic", "/image_raw");
   param_crop_size_ = this->declare_parameter("crop_size", 800);
@@ -200,7 +203,10 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   if (param_use_mqtt_) {
       init_mqtt();
   }
-
+  
+  if (param_serial_output_) {
+    init_serial();
+  }
   RCLCPP_INFO(this->get_logger(), 
     "VideoEncoderNode: crop=%d -> %dx%d@%dfps %dkbps, packets=%dbytes, static_simplify=%s, "
     "motion_open(y=%d,x=%d), trail=%df disable@%.0f%% mono=%s, "
@@ -223,6 +229,13 @@ VideoEncoderNode::~VideoEncoderNode()
     cv::destroyAllWindows();
   }
   shutdown_gstreamer();
+
+  if (serial_driver_ && serial_driver_->port()->is_open()) {
+    serial_driver_->port()->close();
+  }
+  if (serial_ctx_) {
+    serial_ctx_->waitForExit();
+  }
 }
 
 void VideoEncoderNode::initialize_gstreamer()
@@ -622,34 +635,63 @@ void VideoEncoderNode::pull_stream_and_packetize()
         pkt.data.fill(0);
         memcpy(pkt.data.data(), stream_buffer_.data(), copy_size);
 
-        if (param_use_mqtt_ && mqtt_client_ && mqtt_client_->is_connected()) {
-            // 组装 300 字节完整包：18 字节 PacketHeader + 282 字节 H.264 载荷
-            std::vector<uint8_t> mqtt_buf(MAX_PACKET_SIZE);  // size = 300
-            PacketHeader hdr = make_header(pkt.sequence_id, pkt.timestamp_ns,
-                                          static_cast<uint16_t>(PAYLOAD_SIZE));
-            std::memcpy(mqtt_buf.data(), &hdr, HEADER_SIZE);               // 偏移 0..17
-            std::memcpy(mqtt_buf.data() + HEADER_SIZE,
-                        pkt.data.data(), PAYLOAD_SIZE);                    // 偏移 18..299
+        // ===== 构建 300 字节的有效载荷 (PacketHeader + H.264 数据) =====
+        std::vector<uint8_t> mqtt_buf(MAX_PACKET_SIZE);
+        PacketHeader hdr = make_header(pkt.sequence_id, pkt.timestamp_ns,
+                                       static_cast<uint16_t>(PAYLOAD_SIZE));
+        std::memcpy(mqtt_buf.data(), &hdr, HEADER_SIZE);
+        std::memcpy(mqtt_buf.data() + HEADER_SIZE,
+                    pkt.data.data(), PAYLOAD_SIZE);
+        
+        // ===== 串口发送分支 =====
+        if (param_serial_output_) {
+          if (serial_driver_ && serial_driver_->port()->is_open()) {
+            try {
+              // 用 Protobuf 包装 300 字节有效载荷
+              doorlock_sniper::CustomByteBlock proto;
+              proto.set_data(mqtt_buf.data(), MAX_PACKET_SIZE);
+              std::string out;
+              proto.SerializeToString(&out);
 
-            doorlock_sniper::CustomByteBlock proto;
-            proto.set_data(mqtt_buf.data(), MAX_PACKET_SIZE);
+              // 构造串口发送包
+              SerialSendPacket serial_pkt;
+              serial_pkt.length = static_cast<uint16_t>(out.size());
+              memset(serial_pkt.data, 0, sizeof(serial_pkt.data));
+              memcpy(serial_pkt.data, out.data(), out.size());
 
-            std::string out;
-            proto.SerializeToString(&out);
-
-            mqtt::message_ptr msg = mqtt::make_message(param_mqtt_topic_, out);
-            msg->set_qos(0);
-            mqtt_client_->publish(msg);
+              // 发送变长包 (2 字节长度 + 实际 payload)
+              std::vector<uint8_t> send_vec = toVector(serial_pkt);
+              serial_driver_->port()->send(send_vec);
+            } catch (const std::exception &e) {
+              RCLCPP_WARN(this->get_logger(), "Serial send error: %s", e.what());
+            }
+          } else {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "Serial port unavailable, dropping packet");
+          }
         }
-        else
-        {
-           packet_pub_->publish(pkt);
+
+        // ===== MQTT 发送分支 =====
+        else if (param_use_mqtt_ && mqtt_client_ && mqtt_client_->is_connected()) {
+          doorlock_sniper::CustomByteBlock proto;
+          proto.set_data(mqtt_buf.data(), MAX_PACKET_SIZE);
+          std::string out;
+          proto.SerializeToString(&out);
+
+          mqtt::message_ptr msg = mqtt::make_message(param_mqtt_topic_, out);
+          msg->set_qos(0);
+          mqtt_client_->publish(msg);
+        }
+        
+        // ===== ROS2 话题发送分支 =====
+        else {
+          packet_pub_->publish(pkt);
         }
 
         sent_window_.emplace_back(now_ns, packet_bytes);
         sent_window_bytes_ += packet_bytes;
 
-        memmove(stream_buffer_.data(), 
+        memmove(stream_buffer_.data(),
                 stream_buffer_.data() + PAYLOAD_SIZE,
                 stream_buffer_.size() - PAYLOAD_SIZE);
         stream_buffer_.resize(stream_buffer_.size() - PAYLOAD_SIZE);
@@ -793,6 +835,28 @@ void VideoEncoderNode::init_mqtt()
     RCLCPP_INFO(this->get_logger(), "MQTT connected");
   } catch (const mqtt::exception &e) {
     RCLCPP_ERROR(this->get_logger(), "MQTT connect failed: %s", e.what());
+  }
+}
+
+void VideoEncoderNode::init_serial()
+{
+  serial_ctx_ = std::make_shared<drivers::common::IoContext>(1);   // 1 个线程
+  serial_driver_ = std::make_unique<drivers::serial_driver::SerialDriver>(*serial_ctx_);
+
+  auto fc = drivers::serial_driver::FlowControl::NONE;
+  auto pt = drivers::serial_driver::Parity::NONE;
+  auto sb = drivers::serial_driver::StopBits::ONE;
+  serial_config_ = std::make_unique<drivers::serial_driver::SerialPortConfig>(
+      param_baud_rate_, fc, pt, sb);
+
+  try {
+    serial_driver_->init_port(param_serial_port_, *serial_config_);
+    serial_driver_->port()->open();
+    RCLCPP_INFO(this->get_logger(), "Serial port %s opened (baud %d)",
+                param_serial_port_.c_str(), param_baud_rate_);
+  } catch (const std::exception &e) {
+    RCLCPP_ERROR(this->get_logger(), "Serial init failed: %s", e.what());
+    serial_driver_.reset();
   }
 }
 

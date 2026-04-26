@@ -51,15 +51,20 @@ video_encoder:
 
     # 最大发送延迟
     max_tx_delay_s: 0.5
-    
-    use_mqtt: true                     # 是否使用 MQTT 发送数据
-    mqtt_ip: 127.0.0.1 # 192.168.12.1               # MQTT 服务器 IP
+
+    #  MQTT 参数
+    use_mqtt: true                      # 是否使用 MQTT 发送数据
+    mqtt_ip: 127.0.0.1 # 192.168.12.1   # MQTT 服务器 IP
     mqtt_port: 3333                     # MQTT 服务器端口
     mqtt_topic: "CustomByteBlock"       # MQTT 话题  
     robot_id: "1"                       # 机器人 ID（用于 MQTT 消息）
     # 机器人ID：
     # 红：“1”
     # 蓝：“101”
+    # 串口参数
+    serial_output: false
+    serial_port: "/dev/ttyACM0"        # 串口设备
+    baud_rate: 115200                  # 串口波特率
 
 
  

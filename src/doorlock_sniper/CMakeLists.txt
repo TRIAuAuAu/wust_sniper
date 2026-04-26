@@ -14,6 +14,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(serial_driver REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 # Protobuf
@@ -67,6 +68,7 @@ ament_target_dependencies(video_encoder_node
   cv_bridge
   std_msgs
   OpenCV
+  serial_driver
 )
 
 # 链接 GStreamer 库 ， Protobuf 库 和 Paho MQTT 库

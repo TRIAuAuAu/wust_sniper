@@ -33,6 +33,7 @@
   <test_depend>ament_lint_common</test_depend>
 
   <depend>protobuf</depend>
+  <depend>serial_driver</depend>
   <buildtool_depend>protobuf</buildtool_depend>
   <exec_depend>libpaho-mqttpp3-dev</exec_depend>
   <exec_depend>libpaho-mqtt3a-dev</exec_depend>
