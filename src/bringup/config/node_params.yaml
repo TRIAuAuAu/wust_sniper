@@ -57,6 +57,9 @@ video_encoder:
     mqtt_port: 3333                     # MQTT 服务器端口
     mqtt_topic: "CustomByteBlock"       # MQTT 话题  
     robot_id: "1"                       # 机器人 ID（用于 MQTT 消息）
+    # 机器人ID：
+    # 红：“1”
+    # 蓝：“101”
 
 
  
@@ -82,4 +85,7 @@ video_decoder:
     mqtt_ip: 127.0.0.1 # 192.168.12.1
     mqtt_port: 3333
     mqtt_topic: "CustomByteBlock"
-    robot_id: "decoder1"
+    robot_id: "0x0101"
+    # 机器人ID：
+    # 红：“0x0101”
+    # 蓝：“0x0165”
