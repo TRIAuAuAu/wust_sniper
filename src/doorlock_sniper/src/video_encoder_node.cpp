@@ -1,27 +1,22 @@
 #include "doorlock_sniper/video_encoder_node.hpp"
-#include <cv_bridge/cv_bridge.h>
-#include <rclcpp_components/register_node_macro.hpp>
+#include "video_stream.pb.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <cstring>  // 为 memcpy/memset
+#include <cstring> // 为 memcpy/memset
+#include <cv_bridge/cv_bridge.h>
 #include <filesystem>
 #include <iomanip>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <sstream>
-#include "video_stream.pb.h"
 
-namespace doorlock_sniper
-{
+namespace doorlock_sniper {
 
-VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
-: Node("video_encoder_node", options),
-  pipeline_(nullptr),
-  appsrc_(nullptr),
-  appsink_(nullptr),
-  bus_(nullptr),
-  packet_sequence_id_(0),    // 初始化顺序与声明一致
-  frame_count_(0),
-  display_running_(false)    // 最后初始化
+VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions &options)
+    : Node("video_encoder_node", options), pipeline_(nullptr), appsrc_(nullptr),
+      appsink_(nullptr), bus_(nullptr),
+      packet_sequence_id_(0),                  // 初始化顺序与声明一致
+      frame_count_(0), display_running_(false) // 最后初始化
 {
   // mqtt
   param_use_mqtt_ = this->declare_parameter("use_mqtt", false);
@@ -30,10 +25,10 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   param_mqtt_topic_ = this->declare_parameter("mqtt_topic", "CustomByteBlock");
   param_robot_id_ = this->declare_parameter("robot_id", std::string("1"));
 
- // serial_driver
+  // serial_driver
   param_serial_output_ = this->declare_parameter("serial_output", false);
-  param_serial_port_   = this->declare_parameter("serial_port", "/dev/ttyACM0");
-  param_baud_rate_     = this->declare_parameter("baud_rate", 115200);
+  param_serial_port_ = this->declare_parameter("serial_port", "/dev/ttyACM0");
+  param_baud_rate_ = this->declare_parameter("baud_rate", 115200);
 
   param_input_topic_ = this->declare_parameter("input_topic", "/image_raw");
   param_crop_size_ = this->declare_parameter("crop_size", 800);
@@ -44,154 +39,162 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   param_motion_threshold_ = this->declare_parameter("motion_threshold", 14);
   param_motion_erode_px_ = this->declare_parameter("motion_erode_px", 1);
   param_motion_dilate_px_ = this->declare_parameter("motion_dilate_px", 2);
-  param_motion_trail_frames_ = this->declare_parameter("motion_trail_frames", 3);
-  param_trail_disable_motion_ratio_ = this->declare_parameter("trail_disable_motion_ratio", 0.30);
+  param_motion_trail_frames_ =
+      this->declare_parameter("motion_trail_frames", 3);
+  param_trail_disable_motion_ratio_ =
+      this->declare_parameter("trail_disable_motion_ratio", 0.30);
   param_bg_update_alpha_ = this->declare_parameter("bg_update_alpha", 0.01);
   param_bg_blur_sigma_ = this->declare_parameter("bg_blur_sigma", 1.2);
   param_center_clear_size_ = this->declare_parameter("center_clear_size", 100);
   param_force_monochrome_ = this->declare_parameter("force_monochrome", false);
-  param_bandwidth_limit_kbytes_ = this->declare_parameter("bandwidth_limit_kbytes", 7.0);
-  param_bandwidth_window_s_ = this->declare_parameter("bandwidth_window_s", 2.0);
+  param_bandwidth_limit_kbytes_ =
+      this->declare_parameter("bandwidth_limit_kbytes", 7.0);
+  param_bandwidth_window_s_ =
+      this->declare_parameter("bandwidth_window_s", 2.0);
   param_max_tx_delay_s_ = this->declare_parameter("max_tx_delay_s", 1.0);
   param_enable_display_ = this->declare_parameter("enable_display", true);
-  param_x264_preset_ = this->declare_parameter("x264_preset", std::string("auto"));
-  param_debug_dump_enable_ = this->declare_parameter("debug_dump_enable", false);
-  param_debug_dump_every_n_frames_ = this->declare_parameter("debug_dump_every_n_frames", 20);
-  param_debug_dump_save_raw_ = this->declare_parameter("debug_dump_save_raw", true);
-  param_debug_dump_save_roi_ = this->declare_parameter("debug_dump_save_roi", true);
-  param_debug_dump_save_static_ = this->declare_parameter("debug_dump_save_static", true);
-  param_debug_dump_save_final_ = this->declare_parameter("debug_dump_save_final", true);
-  param_debug_dump_dir_ = this->declare_parameter("debug_dump_dir", std::string("sniper_debug_imgs"));
+  param_x264_preset_ =
+      this->declare_parameter("x264_preset", std::string("auto"));
+  param_debug_dump_enable_ =
+      this->declare_parameter("debug_dump_enable", false);
+  param_debug_dump_every_n_frames_ =
+      this->declare_parameter("debug_dump_every_n_frames", 20);
+  param_debug_dump_save_raw_ =
+      this->declare_parameter("debug_dump_save_raw", true);
+  param_debug_dump_save_roi_ =
+      this->declare_parameter("debug_dump_save_roi", true);
+  param_debug_dump_save_static_ =
+      this->declare_parameter("debug_dump_save_static", true);
+  param_debug_dump_save_final_ =
+      this->declare_parameter("debug_dump_save_final", true);
+  param_debug_dump_dir_ = this->declare_parameter(
+      "debug_dump_dir", std::string("sniper_debug_imgs"));
 
   if (param_output_fps_ < 1) {
-    RCLCPP_WARN(this->get_logger(), "Invalid output_fps=%d, clamp to 1", param_output_fps_);
+    RCLCPP_WARN(this->get_logger(), "Invalid output_fps=%d, clamp to 1",
+                param_output_fps_);
     param_output_fps_ = 1;
   }
   if (param_output_fps_ > 60) {
-    RCLCPP_WARN(this->get_logger(), "output_fps=%d too high, clamp to 60", param_output_fps_);
+    RCLCPP_WARN(this->get_logger(), "output_fps=%d too high, clamp to 60",
+                param_output_fps_);
     param_output_fps_ = 60;
   }
 
   if (param_target_bitrate_ < 200) {
-    RCLCPP_WARN(
-      this->get_logger(),
-      "Very low bitrate (%d kbps) detected, using low-bitrate optimized pipeline",
-      param_target_bitrate_);
+    RCLCPP_WARN(this->get_logger(),
+                "Very low bitrate (%d kbps) detected, using low-bitrate "
+                "optimized pipeline",
+                param_target_bitrate_);
   }
   if (param_motion_trail_frames_ < 0) {
-    RCLCPP_WARN(
-      this->get_logger(), "motion_trail_frames=%d invalid, clamp to 0",
-      param_motion_trail_frames_);
+    RCLCPP_WARN(this->get_logger(),
+                "motion_trail_frames=%d invalid, clamp to 0",
+                param_motion_trail_frames_);
     param_motion_trail_frames_ = 0;
   }
   if (param_motion_trail_frames_ > 15) {
-    RCLCPP_WARN(
-      this->get_logger(), "motion_trail_frames=%d too high, clamp to 15",
-      param_motion_trail_frames_);
+    RCLCPP_WARN(this->get_logger(),
+                "motion_trail_frames=%d too high, clamp to 15",
+                param_motion_trail_frames_);
     param_motion_trail_frames_ = 15;
   }
   if (param_trail_disable_motion_ratio_ < 0.0) {
-    RCLCPP_WARN(
-      this->get_logger(), "trail_disable_motion_ratio=%.3f invalid, clamp to 0.0",
-      param_trail_disable_motion_ratio_);
+    RCLCPP_WARN(this->get_logger(),
+                "trail_disable_motion_ratio=%.3f invalid, clamp to 0.0",
+                param_trail_disable_motion_ratio_);
     param_trail_disable_motion_ratio_ = 0.0;
   }
   if (param_trail_disable_motion_ratio_ > 1.0) {
-    RCLCPP_WARN(
-      this->get_logger(), "trail_disable_motion_ratio=%.3f invalid, clamp to 1.0",
-      param_trail_disable_motion_ratio_);
+    RCLCPP_WARN(this->get_logger(),
+                "trail_disable_motion_ratio=%.3f invalid, clamp to 1.0",
+                param_trail_disable_motion_ratio_);
     param_trail_disable_motion_ratio_ = 1.0;
   }
 
   if (param_motion_erode_px_ < 0) {
-    RCLCPP_WARN(
-      this->get_logger(), "motion_erode_px=%d invalid, clamp to 0",
-      param_motion_erode_px_);
+    RCLCPP_WARN(this->get_logger(), "motion_erode_px=%d invalid, clamp to 0",
+                param_motion_erode_px_);
     param_motion_erode_px_ = 0;
   }
   if (param_motion_erode_px_ > 20) {
-    RCLCPP_WARN(
-      this->get_logger(), "motion_erode_px=%d too high, clamp to 20",
-      param_motion_erode_px_);
+    RCLCPP_WARN(this->get_logger(), "motion_erode_px=%d too high, clamp to 20",
+                param_motion_erode_px_);
     param_motion_erode_px_ = 20;
   }
   if (param_motion_dilate_px_ < 0) {
-    RCLCPP_WARN(
-      this->get_logger(), "motion_dilate_px=%d invalid, clamp to 0",
-      param_motion_dilate_px_);
+    RCLCPP_WARN(this->get_logger(), "motion_dilate_px=%d invalid, clamp to 0",
+                param_motion_dilate_px_);
     param_motion_dilate_px_ = 0;
   }
   if (param_motion_dilate_px_ > 20) {
-    RCLCPP_WARN(
-      this->get_logger(), "motion_dilate_px=%d too high, clamp to 20",
-      param_motion_dilate_px_);
+    RCLCPP_WARN(this->get_logger(), "motion_dilate_px=%d too high, clamp to 20",
+                param_motion_dilate_px_);
     param_motion_dilate_px_ = 20;
   }
 
   if (param_bandwidth_limit_kbytes_ < 1.0) {
-    RCLCPP_WARN(
-      this->get_logger(), "bandwidth_limit_kbytes=%.2f too low, clamp to 1.0",
-      param_bandwidth_limit_kbytes_);
+    RCLCPP_WARN(this->get_logger(),
+                "bandwidth_limit_kbytes=%.2f too low, clamp to 1.0",
+                param_bandwidth_limit_kbytes_);
     param_bandwidth_limit_kbytes_ = 1.0;
   }
   if (param_bandwidth_window_s_ < 0.2) {
-    RCLCPP_WARN(
-      this->get_logger(), "bandwidth_window_s=%.2f too low, clamp to 0.2",
-      param_bandwidth_window_s_);
+    RCLCPP_WARN(this->get_logger(),
+                "bandwidth_window_s=%.2f too low, clamp to 0.2",
+                param_bandwidth_window_s_);
     param_bandwidth_window_s_ = 0.2;
   }
   if (param_max_tx_delay_s_ < 0.05) {
-    RCLCPP_WARN(
-      this->get_logger(), "max_tx_delay_s=%.2f too low, clamp to 0.05",
-      param_max_tx_delay_s_);
+    RCLCPP_WARN(this->get_logger(),
+                "max_tx_delay_s=%.2f too low, clamp to 0.05",
+                param_max_tx_delay_s_);
     param_max_tx_delay_s_ = 0.05;
   }
   if (param_debug_dump_every_n_frames_ < 1) {
-    RCLCPP_WARN(
-      this->get_logger(), "debug_dump_every_n_frames=%d invalid, clamp to 1",
-      param_debug_dump_every_n_frames_);
+    RCLCPP_WARN(this->get_logger(),
+                "debug_dump_every_n_frames=%d invalid, clamp to 1",
+                param_debug_dump_every_n_frames_);
     param_debug_dump_every_n_frames_ = 1;
   }
   if (param_debug_dump_enable_) {
     const bool any_encoder_save =
-      param_debug_dump_save_raw_ || param_debug_dump_save_roi_ ||
-      param_debug_dump_save_static_ || param_debug_dump_save_final_;
+        param_debug_dump_save_raw_ || param_debug_dump_save_roi_ ||
+        param_debug_dump_save_static_ || param_debug_dump_save_final_;
     if (!any_encoder_save) {
       RCLCPP_WARN(
-        this->get_logger(),
-        "debug_dump_enable=true but all encoder dump switches are off");
+          this->get_logger(),
+          "debug_dump_enable=true but all encoder dump switches are off");
     } else {
-      const std::filesystem::path dump_dir = std::filesystem::path(param_debug_dump_dir_) / "encoder";
+      const std::filesystem::path dump_dir =
+          std::filesystem::path(param_debug_dump_dir_) / "encoder";
       std::error_code ec;
       std::filesystem::create_directories(dump_dir, ec);
       if (ec) {
-        RCLCPP_WARN(
-          this->get_logger(),
-          "Create debug dump dir failed: %s (%s), disable debug dump",
-          dump_dir.string().c_str(), ec.message().c_str());
+        RCLCPP_WARN(this->get_logger(),
+                    "Create debug dump dir failed: %s (%s), disable debug dump",
+                    dump_dir.string().c_str(), ec.message().c_str());
         param_debug_dump_enable_ = false;
       } else {
-        RCLCPP_INFO(
-          this->get_logger(),
-          "Debug dump enabled: every %d frames -> %s (raw=%s roi=%s static=%s final=%s)",
-          param_debug_dump_every_n_frames_,
-          dump_dir.string().c_str(),
-          param_debug_dump_save_raw_ ? "on" : "off",
-          param_debug_dump_save_roi_ ? "on" : "off",
-          param_debug_dump_save_static_ ? "on" : "off",
-          param_debug_dump_save_final_ ? "on" : "off");
+        RCLCPP_INFO(this->get_logger(),
+                    "Debug dump enabled: every %d frames -> %s (raw=%s roi=%s "
+                    "static=%s final=%s)",
+                    param_debug_dump_every_n_frames_, dump_dir.string().c_str(),
+                    param_debug_dump_save_raw_ ? "on" : "off",
+                    param_debug_dump_save_roi_ ? "on" : "off",
+                    param_debug_dump_save_static_ ? "on" : "off",
+                    param_debug_dump_save_final_ ? "on" : "off");
       }
     }
   }
 
   image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-    param_input_topic_,
-    rclcpp::SensorDataQoS(),
-    std::bind(&VideoEncoderNode::image_callback, this, std::placeholders::_1));
+      param_input_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&VideoEncoderNode::image_callback, this,
+                std::placeholders::_1));
 
   packet_pub_ = this->create_publisher<doorlock_sniper::msg::VideoPacket>(
-    "video_stream",
-    rclcpp::QoS(rclcpp::KeepLast(3000)).reliable());
+      "video_stream", rclcpp::QoS(rclcpp::KeepLast(3000)).reliable());
 
   initialize_gstreamer();
 
@@ -201,31 +204,32 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   }
 
   if (param_use_mqtt_) {
-      init_mqtt();
+    init_mqtt();
   }
-  
+
   if (param_serial_output_) {
     init_serial();
   }
-  RCLCPP_INFO(this->get_logger(), 
-    "VideoEncoderNode: crop=%d -> %dx%d@%dfps %dkbps, packets=%dbytes, static_simplify=%s, "
-    "motion_open(y=%d,x=%d), trail=%df disable@%.0f%% mono=%s, "
-    "tx_limit=%.2fkB/s@%.2fs max_delay=%.2fs x264_preset=%s",
-    param_crop_size_, param_output_size_, param_output_size_,
-    param_output_fps_, param_target_bitrate_, PAYLOAD_SIZE,
-    param_static_simplify_ ? "on" : "off",
-    param_motion_erode_px_, param_motion_dilate_px_,
-    param_motion_trail_frames_, param_trail_disable_motion_ratio_ * 100.0,
-    param_force_monochrome_ ? "on" : "off",
-    param_bandwidth_limit_kbytes_, param_bandwidth_window_s_, param_max_tx_delay_s_,
-    param_x264_preset_.c_str());
+  RCLCPP_INFO(this->get_logger(),
+              "VideoEncoderNode: crop=%d -> %dx%d@%dfps %dkbps, "
+              "packets=%dbytes, static_simplify=%s, "
+              "motion_open(y=%d,x=%d), trail=%df disable@%.0f%% mono=%s, "
+              "tx_limit=%.2fkB/s@%.2fs max_delay=%.2fs x264_preset=%s",
+              param_crop_size_, param_output_size_, param_output_size_,
+              param_output_fps_, param_target_bitrate_, PAYLOAD_SIZE,
+              param_static_simplify_ ? "on" : "off", param_motion_erode_px_,
+              param_motion_dilate_px_, param_motion_trail_frames_,
+              param_trail_disable_motion_ratio_ * 100.0,
+              param_force_monochrome_ ? "on" : "off",
+              param_bandwidth_limit_kbytes_, param_bandwidth_window_s_,
+              param_max_tx_delay_s_, param_x264_preset_.c_str());
 }
 
-VideoEncoderNode::~VideoEncoderNode()
-{
+VideoEncoderNode::~VideoEncoderNode() {
   if (param_enable_display_) {
     display_running_ = false;
-    if (display_thread_.joinable()) display_thread_.join();
+    if (display_thread_.joinable())
+      display_thread_.join();
     cv::destroyAllWindows();
   }
   shutdown_gstreamer();
@@ -238,8 +242,7 @@ VideoEncoderNode::~VideoEncoderNode()
   }
 }
 
-void VideoEncoderNode::initialize_gstreamer()
-{
+void VideoEncoderNode::initialize_gstreamer() {
   gst_init(nullptr, nullptr);
 
   pipeline_ = gst_pipeline_new("encoder_pipe");
@@ -255,120 +258,105 @@ void VideoEncoderNode::initialize_gstreamer()
   }
 
   GstCaps *caps = gst_caps_new_simple(
-    "video/x-raw",
-    "format", G_TYPE_STRING, "BGR",
-    "width", G_TYPE_INT, param_output_size_,
-    "height", G_TYPE_INT, param_output_size_,
-    "framerate", GST_TYPE_FRACTION, param_output_fps_, 1,
-    nullptr);
-  g_object_set(G_OBJECT(appsrc_),
-    "caps", caps,
-    "stream-type", 0,
-    "format", GST_FORMAT_TIME,
-    "is-live", TRUE,
-    "do-timestamp", TRUE,
-    nullptr);
+      "video/x-raw", "format", G_TYPE_STRING, "BGR", "width", G_TYPE_INT,
+      param_output_size_, "height", G_TYPE_INT, param_output_size_, "framerate",
+      GST_TYPE_FRACTION, param_output_fps_, 1, nullptr);
+  g_object_set(G_OBJECT(appsrc_), "caps", caps, "stream-type", 0, "format",
+               GST_FORMAT_TIME, "is-live", TRUE, "do-timestamp", TRUE, nullptr);
   gst_caps_unref(caps);
 
   const bool low_bitrate_mode = (param_target_bitrate_ <= 80);
-  const int default_speed_preset = low_bitrate_mode ? 9 : 3;  // veryslow / veryfast
+  const int default_speed_preset =
+      low_bitrate_mode ? 9 : 3; // veryslow / veryfast
   int speed_preset = default_speed_preset;
   std::string preset_lower = param_x264_preset_;
   std::transform(
-    preset_lower.begin(), preset_lower.end(), preset_lower.begin(),
-    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      preset_lower.begin(), preset_lower.end(), preset_lower.begin(),
+      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
   if (!preset_lower.empty() && preset_lower != "auto") {
-    if (preset_lower == "ultrafast") speed_preset = 1;
-    else if (preset_lower == "superfast") speed_preset = 2;
-    else if (preset_lower == "veryfast") speed_preset = 3;
-    else if (preset_lower == "faster") speed_preset = 4;
-    else if (preset_lower == "fast") speed_preset = 5;
-    else if (preset_lower == "medium") speed_preset = 6;
-    else if (preset_lower == "slow") speed_preset = 7;
-    else if (preset_lower == "slower") speed_preset = 8;
-    else if (preset_lower == "veryslow") speed_preset = 9;
-    else if (preset_lower == "placebo") speed_preset = 10;
+    if (preset_lower == "ultrafast")
+      speed_preset = 1;
+    else if (preset_lower == "superfast")
+      speed_preset = 2;
+    else if (preset_lower == "veryfast")
+      speed_preset = 3;
+    else if (preset_lower == "faster")
+      speed_preset = 4;
+    else if (preset_lower == "fast")
+      speed_preset = 5;
+    else if (preset_lower == "medium")
+      speed_preset = 6;
+    else if (preset_lower == "slow")
+      speed_preset = 7;
+    else if (preset_lower == "slower")
+      speed_preset = 8;
+    else if (preset_lower == "veryslow")
+      speed_preset = 9;
+    else if (preset_lower == "placebo")
+      speed_preset = 10;
     else {
-      RCLCPP_WARN(
-        this->get_logger(),
-        "Unknown x264_preset='%s', fallback to auto default",
-        param_x264_preset_.c_str());
+      RCLCPP_WARN(this->get_logger(),
+                  "Unknown x264_preset='%s', fallback to auto default",
+                  param_x264_preset_.c_str());
       speed_preset = default_speed_preset;
     }
   }
 
-  g_object_set(G_OBJECT(encoder),
-      "bitrate", param_target_bitrate_,
-      "speed-preset", speed_preset,
-      "tune", 0x00000004,          // zerolatency
-      "byte-stream", TRUE,
-      "key-int-max", param_output_fps_,   // I帧间隔 2 秒（100帧）
-      "bframes", 0,
-      "rc-lookahead", 0,
-      "sync-lookahead", 0,
-      "sliced-threads", TRUE,
-      "ref", 1,
-      "aud", TRUE,
-      "option-string", "repeat-headers=1:scenecut=0:force-cfr=1",
-      "pass", 0, nullptr);
+  g_object_set(G_OBJECT(encoder), "bitrate", param_target_bitrate_,
+               "speed-preset", speed_preset, "tune", 0x00000004, // zerolatency
+               "byte-stream", TRUE, "key-int-max",
+               param_output_fps_, // I帧间隔 2 秒（100帧）
+               "bframes", 0, "rc-lookahead", 0, "sync-lookahead", 0,
+               "sliced-threads", TRUE, "ref", 1, "aud", TRUE, "option-string",
+               "repeat-headers=1:scenecut=0:force-cfr=1", "pass", 0, nullptr);
 
   // 确保下游看到可流式重组的 Annex-B 字节流，并周期重复 SPS/PPS
-  g_object_set(
-    G_OBJECT(parser),
-    "config-interval", -1,
-    "disable-passthrough", TRUE,
-    nullptr);
+  g_object_set(G_OBJECT(parser), "config-interval", -1, "disable-passthrough",
+               TRUE, nullptr);
 
   GstCaps *h264_caps = gst_caps_new_simple(
-    "video/x-h264",
-    "stream-format", G_TYPE_STRING, "byte-stream",
-    "alignment", G_TYPE_STRING, "au",
-    nullptr);
+      "video/x-h264", "stream-format", G_TYPE_STRING, "byte-stream",
+      "alignment", G_TYPE_STRING, "au", nullptr);
 
-  g_object_set(G_OBJECT(appsink_),
-    "caps", h264_caps,
-    "max-buffers", 5,
-    "drop", FALSE,
-    "emit-signals", FALSE,
-    "sync", FALSE,
-    nullptr);
+  g_object_set(G_OBJECT(appsink_), "caps", h264_caps, "max-buffers", 5, "drop",
+               FALSE, "emit-signals", FALSE, "sync", FALSE, nullptr);
   gst_caps_unref(h264_caps);
 
-  gst_bin_add_many(GST_BIN(pipeline_), appsrc_, convert, encoder, parser, appsink_, nullptr);
-  if (!gst_element_link_many(appsrc_, convert, encoder, parser, appsink_, nullptr)) {
+  gst_bin_add_many(GST_BIN(pipeline_), appsrc_, convert, encoder, parser,
+                   appsink_, nullptr);
+  if (!gst_element_link_many(appsrc_, convert, encoder, parser, appsink_,
+                             nullptr)) {
     RCLCPP_FATAL(this->get_logger(), "GStreamer pipeline link failed");
     return;
   }
 
-  GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+  GstStateChangeReturn ret =
+      gst_element_set_state(pipeline_, GST_STATE_PLAYING);
   if (ret == GST_STATE_CHANGE_FAILURE) {
     RCLCPP_FATAL(this->get_logger(), "GStreamer pipeline start failed");
     return;
   }
-  
+
   bus_ = gst_element_get_bus(pipeline_);
-  RCLCPP_INFO(
-    this->get_logger(),
-    "GStreamer encoder ready (%s mode, byte-stream)",
-    low_bitrate_mode ? "low-bitrate" : "low-latency");
+  RCLCPP_INFO(this->get_logger(),
+              "GStreamer encoder ready (%s mode, byte-stream)",
+              low_bitrate_mode ? "low-bitrate" : "low-latency");
 }
 
-void VideoEncoderNode::shutdown_gstreamer()
-{
+void VideoEncoderNode::shutdown_gstreamer() {
   if (pipeline_) {
     gst_element_set_state(pipeline_, GST_STATE_NULL);
-    if (bus_) gst_object_unref(bus_);
+    if (bus_)
+      gst_object_unref(bus_);
     gst_object_unref(pipeline_);
     pipeline_ = nullptr;
   }
 }
 
-cv::Mat VideoEncoderNode::preprocess_image(
-  const cv::Mat & input,
-  cv::Mat * roi_downsample,
-  cv::Mat * static_removed)
-{
+cv::Mat VideoEncoderNode::preprocess_image(const cv::Mat &input,
+                                           cv::Mat *roi_downsample,
+                                           cv::Mat *static_removed) {
   int x = (input.cols - param_crop_size_) / 2;
   int y = (input.rows - param_crop_size_) / 2;
   x = std::max(0, x);
@@ -378,7 +366,7 @@ cv::Mat VideoEncoderNode::preprocess_image(
 
   cv::Mat cropped = input(cv::Rect(x, y, w, h));
   cv::Mat resized;
-  cv::resize(cropped, resized, cv::Size(param_output_size_, param_output_size_), 
+  cv::resize(cropped, resized, cv::Size(param_output_size_, param_output_size_),
              0, 0, cv::INTER_LINEAR);
   if (roi_downsample) {
     resized.copyTo(*roi_downsample);
@@ -406,79 +394,91 @@ cv::Mat VideoEncoderNode::preprocess_image(
   cv::absdiff(gray, bg_u8, diff);
 
   cv::Mat motion_mask;
-  cv::threshold(diff, motion_mask, param_motion_threshold_, 255, cv::THRESH_BINARY);
+  cv::threshold(diff, motion_mask, param_motion_threshold_, 255,
+                cv::THRESH_BINARY);
   if (param_motion_erode_px_ > 0) {
     if (motion_erode_kernel_.empty()) {
       const int k = 2 * param_motion_erode_px_ + 1;
-      motion_erode_kernel_ = cv::getStructuringElement(
-        cv::MORPH_ELLIPSE, cv::Size(k, k));
+      motion_erode_kernel_ =
+          cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(k, k));
     }
-    cv::erode(motion_mask, motion_mask, motion_erode_kernel_, cv::Point(-1, -1), 1);
+    cv::erode(motion_mask, motion_mask, motion_erode_kernel_, cv::Point(-1, -1),
+              1);
   }
   if (param_motion_dilate_px_ > 0) {
     if (motion_dilate_kernel_.empty()) {
       const int k = 2 * param_motion_dilate_px_ + 1;
-      motion_dilate_kernel_ = cv::getStructuringElement(
-        cv::MORPH_ELLIPSE, cv::Size(k, k));
+      motion_dilate_kernel_ =
+          cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(k, k));
     }
-    cv::dilate(motion_mask, motion_mask, motion_dilate_kernel_, cv::Point(-1, -1), 1);
+    cv::dilate(motion_mask, motion_mask, motion_dilate_kernel_,
+               cv::Point(-1, -1), 1);
   }
   const double motion_ratio_raw =
-    static_cast<double>(cv::countNonZero(motion_mask)) / static_cast<double>(motion_mask.total());
-  const bool suppress_trail = (motion_ratio_raw >= param_trail_disable_motion_ratio_);
+      static_cast<double>(cv::countNonZero(motion_mask)) /
+      static_cast<double>(motion_mask.total());
+  const bool suppress_trail =
+      (motion_ratio_raw >= param_trail_disable_motion_ratio_);
 
   // 中心区域保护：不做静态模糊
   if (param_center_clear_size_ > 0) {
-    const int clear_size = std::min({param_center_clear_size_, working.cols, working.rows});
+    const int clear_size =
+        std::min({param_center_clear_size_, working.cols, working.rows});
     const int x0 = std::max(0, working.cols / 2 - clear_size / 2);
     const int y0 = std::max(0, working.rows / 2 - clear_size / 2);
     const int cw = std::min(clear_size, working.cols - x0);
     const int ch = std::min(clear_size, working.rows - y0);
-    cv::rectangle(motion_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255), cv::FILLED);
+    cv::rectangle(motion_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255),
+                  cv::FILLED);
   }
 
   // 中心区域保护：不做静态模糊（原有功能保留）
   if (param_center_clear_size_ > 0) {
-    const int clear_size = std::min({param_center_clear_size_, working.cols, working.rows});
+    const int clear_size =
+        std::min({param_center_clear_size_, working.cols, working.rows});
     const int x0 = std::max(0, working.cols / 2 - clear_size / 2);
     const int y0 = std::max(0, working.rows / 2 - clear_size / 2);
     const int cw = std::min(clear_size, working.cols - x0);
     const int ch = std::min(clear_size, working.rows - y0);
-    cv::rectangle(motion_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255), cv::FILLED);
+    cv::rectangle(motion_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255),
+                  cv::FILLED);
   }
 
-  //  新增：决定彩色覆盖的掩码 
-  cv::Mat color_mask;   // 255 的区域显示彩色
+  //  新增：决定彩色覆盖的掩码
+  cv::Mat color_mask; // 255 的区域显示彩色
   if (param_force_monochrome_) {
-      // 强制灰度时，只保留中心矩形内的彩色
-      if (param_center_clear_size_ > 0) {
-          color_mask = cv::Mat::zeros(working.size(), CV_8UC1);
-          const int clear_size = std::min({param_center_clear_size_, working.cols, working.rows});
-          const int x0 = std::max(0, working.cols / 2 - clear_size / 2);
-          const int y0 = std::max(0, working.rows / 2 - clear_size / 2);
-          const int cw = std::min(clear_size, working.cols - x0);
-          const int ch = std::min(clear_size, working.rows - y0);
-          cv::rectangle(color_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255), cv::FILLED);
-      } else {
-          // 没有设置中心保护区，则全部黑白
-          color_mask = cv::Mat::zeros(working.size(), CV_8UC1);
-      }
+    // 强制灰度时，只保留中心矩形内的彩色
+    if (param_center_clear_size_ > 0) {
+      color_mask = cv::Mat::zeros(working.size(), CV_8UC1);
+      const int clear_size =
+          std::min({param_center_clear_size_, working.cols, working.rows});
+      const int x0 = std::max(0, working.cols / 2 - clear_size / 2);
+      const int y0 = std::max(0, working.rows / 2 - clear_size / 2);
+      const int cw = std::min(clear_size, working.cols - x0);
+      const int ch = std::min(clear_size, working.rows - y0);
+      cv::rectangle(color_mask, cv::Rect(x0, y0, cw, ch), cv::Scalar(255),
+                    cv::FILLED);
+    } else {
+      // 没有设置中心保护区，则全部黑白
+      color_mask = cv::Mat::zeros(working.size(), CV_8UC1);
+    }
   } else {
-      // 不开启灰度，按原有运动掩码覆盖彩色
-      color_mask = motion_mask;
+    // 不开启灰度，按原有运动掩码覆盖彩色
+    color_mask = motion_mask;
   }
 
-  // 背景灰度化 + 模糊 
+  // 背景灰度化 + 模糊
   cv::Mat static_base = working.clone();
   if (param_force_monochrome_) {
-      cv::Mat gray_bg;
-      cv::cvtColor(static_base, gray_bg, cv::COLOR_BGR2GRAY);
-      cv::cvtColor(gray_bg, static_base, cv::COLOR_GRAY2BGR);
+    cv::Mat gray_bg;
+    cv::cvtColor(static_base, gray_bg, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(gray_bg, static_base, cv::COLOR_GRAY2BGR);
   }
 
   cv::Mat blurred_static;
   double safe_sigma = std::max(0.1, param_bg_blur_sigma_);
-  cv::GaussianBlur(static_base, blurred_static, cv::Size(), safe_sigma, safe_sigma);
+  cv::GaussianBlur(static_base, blurred_static, cv::Size(), safe_sigma,
+                   safe_sigma);
 
   cv::Mat focused = blurred_static.clone();
   // 用选定的掩码覆盖彩色区域
@@ -491,7 +491,8 @@ cv::Mat VideoEncoderNode::preprocess_image(
   if (param_motion_trail_frames_ > 0) {
     motion_mask_history_.push_back(motion_mask.clone());
     trail_frame_history_.push_back(working.clone());
-    const size_t max_history = static_cast<size_t>(param_motion_trail_frames_ + 1);
+    const size_t max_history =
+        static_cast<size_t>(param_motion_trail_frames_ + 1);
     while (motion_mask_history_.size() > max_history) {
       motion_mask_history_.pop_front();
     }
@@ -500,7 +501,8 @@ cv::Mat VideoEncoderNode::preprocess_image(
     }
 
     const size_t history_size = motion_mask_history_.size();
-    if (!suppress_trail && history_size > 1 && history_size == trail_frame_history_.size()) {
+    if (!suppress_trail && history_size > 1 &&
+        history_size == trail_frame_history_.size()) {
       cv::Mat trail_mask = motion_mask.clone();
       cv::Mat trail_img = working.clone();
       for (size_t i = 0; i < history_size - 1; ++i) {
@@ -514,19 +516,23 @@ cv::Mat VideoEncoderNode::preprocess_image(
     trail_frame_history_.clear();
   }
 
-  cv::accumulateWeighted(gray, background_gray_f32_, std::clamp(param_bg_update_alpha_, 0.001, 0.2));
+  cv::accumulateWeighted(gray, background_gray_f32_,
+                         std::clamp(param_bg_update_alpha_, 0.001, 0.2));
   return focused;
 }
 
-void VideoEncoderNode::image_callback(const sensor_msgs::msg::Image::SharedPtr msg)
-{
+void VideoEncoderNode::image_callback(
+    const sensor_msgs::msg::Image::SharedPtr msg) {
   try {
     // 仅在明确要求低于 60fps 时做抽帧；60fps 模式不主动丢帧
     if (param_output_fps_ < 60) {
       const int64_t stamp_ns = rclcpp::Time(msg->header.stamp).nanoseconds();
-      const int64_t frame_interval_ns = 1000000000LL / std::max(param_output_fps_, 1);
-      const int64_t now_ns = (stamp_ns > 0) ? stamp_ns : this->now().nanoseconds();
-      if (last_encode_stamp_ns_ > 0 && (now_ns - last_encode_stamp_ns_) < frame_interval_ns) {
+      const int64_t frame_interval_ns =
+          1000000000LL / std::max(param_output_fps_, 1);
+      const int64_t now_ns =
+          (stamp_ns > 0) ? stamp_ns : this->now().nanoseconds();
+      if (last_encode_stamp_ns_ > 0 &&
+          (now_ns - last_encode_stamp_ns_) < frame_interval_ns) {
         return;
       }
       last_encode_stamp_ns_ = now_ns;
@@ -535,46 +541,44 @@ void VideoEncoderNode::image_callback(const sensor_msgs::msg::Image::SharedPtr m
     cv::Mat input = cv_bridge::toCvShare(msg, "bgr8")->image;
     cv::Mat roi_downsample;
     cv::Mat static_removed;
-    cv::Mat processed = preprocess_image(input, &roi_downsample, &static_removed);
-    
+    cv::Mat processed =
+        preprocess_image(input, &roi_downsample, &static_removed);
+
     if (param_enable_display_) {
       cv::Mat raw_preview;
       cv::resize(
-        input,
-        raw_preview,
-        cv::Size(std::max(1, input.cols / 2), std::max(1, input.rows / 2)),
-        0,
-        0,
-        cv::INTER_AREA);
+          input, raw_preview,
+          cv::Size(std::max(1, input.cols / 2), std::max(1, input.rows / 2)), 0,
+          0, cv::INTER_AREA);
       std::lock_guard<std::mutex> lock(frame_mutex_);
       raw_preview.copyTo(display_raw_frame_);
       roi_downsample.copyTo(display_roi_frame_);
       static_removed.copyTo(display_static_frame_);
       processed.copyTo(display_frame_);
     }
-    
+
     push_frame_to_gstreamer(processed);
     pull_stream_and_packetize();
-    
+
     frame_count_++;
-    
-  } catch (const cv_bridge::Exception & e) {
+
+  } catch (const cv_bridge::Exception &e) {
     RCLCPP_ERROR(this->get_logger(), "cv_bridge error: %s", e.what());
   }
 }
 
-void VideoEncoderNode::push_frame_to_gstreamer(const cv::Mat & frame)
-{
-  if (!appsrc_ || frame.empty()) return;
+void VideoEncoderNode::push_frame_to_gstreamer(const cv::Mat &frame) {
+  if (!appsrc_ || frame.empty())
+    return;
 
   size_t size = frame.total() * frame.elemSize();
   GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
-  
+
   GstMapInfo map;
   if (gst_buffer_map(buffer, &map, GST_MAP_WRITE)) {
     memcpy(map.data, frame.data, size);
     gst_buffer_unmap(buffer, &map);
-    
+
     GstFlowReturn ret;
     g_signal_emit_by_name(appsrc_, "push-buffer", buffer, &ret);
     if (ret != GST_FLOW_OK) {
@@ -585,19 +589,21 @@ void VideoEncoderNode::push_frame_to_gstreamer(const cv::Mat & frame)
 }
 
 // 300B 分包 + 带宽窗口限速 + 队列时延上限
-void VideoEncoderNode::pull_stream_and_packetize()
-{
-  if (!appsink_) return;
+void VideoEncoderNode::pull_stream_and_packetize() {
+  if (!appsink_)
+    return;
   const size_t packet_bytes = PAYLOAD_SIZE;
-  const int64_t window_ns = static_cast<int64_t>(param_bandwidth_window_s_ * 1e9);
+  const int64_t window_ns =
+      static_cast<int64_t>(param_bandwidth_window_s_ * 1e9);
   const size_t window_limit_bytes = static_cast<size_t>(
-    param_bandwidth_limit_kbytes_ * 1000.0 * param_bandwidth_window_s_);
+      param_bandwidth_limit_kbytes_ * 1000.0 * param_bandwidth_window_s_);
   const size_t max_backlog_bytes = static_cast<size_t>(
-    param_bandwidth_limit_kbytes_ * 1000.0 * param_max_tx_delay_s_);
+      param_bandwidth_limit_kbytes_ * 1000.0 * param_max_tx_delay_s_);
 
   while (true) {
     GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 0);
-    if (!sample) break;
+    if (!sample)
+      break;
 
     GstBuffer *buffer = gst_sample_get_buffer(sample);
     if (!buffer) {
@@ -617,7 +623,8 @@ void VideoEncoderNode::pull_stream_and_packetize()
       // 2秒滑动窗口硬限速：任何窗口内总字节不超过 window_limit_bytes
       while (stream_buffer_.size() >= packet_bytes) {
         const int64_t now_ns = this->now().nanoseconds();
-        while (!sent_window_.empty() && (now_ns - sent_window_.front().first) > window_ns) {
+        while (!sent_window_.empty() &&
+               (now_ns - sent_window_.front().first) > window_ns) {
           sent_window_bytes_ -= sent_window_.front().second;
           sent_window_.pop_front();
         }
@@ -630,7 +637,8 @@ void VideoEncoderNode::pull_stream_and_packetize()
         pkt.sequence_id = packet_sequence_id_++;
         pkt.timestamp_ns = now_ns;
 
-        size_t copy_size = std::min(stream_buffer_.size(), (size_t)PAYLOAD_SIZE);
+        size_t copy_size =
+            std::min(stream_buffer_.size(), (size_t)PAYLOAD_SIZE);
 
         pkt.data.fill(0);
         memcpy(pkt.data.data(), stream_buffer_.data(), copy_size);
@@ -640,9 +648,9 @@ void VideoEncoderNode::pull_stream_and_packetize()
         PacketHeader hdr = make_header(pkt.sequence_id, pkt.timestamp_ns,
                                        static_cast<uint16_t>(PAYLOAD_SIZE));
         std::memcpy(mqtt_buf.data(), &hdr, HEADER_SIZE);
-        std::memcpy(mqtt_buf.data() + HEADER_SIZE,
-                    pkt.data.data(), PAYLOAD_SIZE);
-        
+        std::memcpy(mqtt_buf.data() + HEADER_SIZE, pkt.data.data(),
+                    PAYLOAD_SIZE);
+
         // ===== 串口发送分支 =====
         if (param_serial_output_) {
           if (serial_driver_ && serial_driver_->port()->is_open()) {
@@ -651,19 +659,20 @@ void VideoEncoderNode::pull_stream_and_packetize()
               doorlock_sniper::CustomByteBlock proto;
               proto.set_data(mqtt_buf.data(), MAX_PACKET_SIZE);
               std::string out;
-              proto.SerializeToString(&out);
+              proto.SerializeToString(&out); // out 大小约为 303 字节
 
-              // 构造串口发送包
+              // 构造固定大小的发送包
               SerialSendPacket serial_pkt;
-              serial_pkt.length = static_cast<uint16_t>(out.size());
-              memset(serial_pkt.data, 0, sizeof(serial_pkt.data));
-              memcpy(serial_pkt.data, out.data(), out.size());
+              memset(serial_pkt.data, 0, sizeof(serial_pkt.data)); // 全部清零
+              memcpy(serial_pkt.data, out.data(), out.size()); // 拷贝有效数据
 
-              // 发送变长包 (2 字节长度 + 实际 payload)
+              // 发送 320 字节定长包
               std::vector<uint8_t> send_vec = toVector(serial_pkt);
               serial_driver_->port()->send(send_vec);
+
             } catch (const std::exception &e) {
-              RCLCPP_WARN(this->get_logger(), "Serial send error: %s", e.what());
+              RCLCPP_WARN(this->get_logger(), "Serial send error: %s",
+                          e.what());
             }
           } else {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
@@ -672,7 +681,8 @@ void VideoEncoderNode::pull_stream_and_packetize()
         }
 
         // ===== MQTT 发送分支 =====
-        else if (param_use_mqtt_ && mqtt_client_ && mqtt_client_->is_connected()) {
+        else if (param_use_mqtt_ && mqtt_client_ &&
+                 mqtt_client_->is_connected()) {
           doorlock_sniper::CustomByteBlock proto;
           proto.set_data(mqtt_buf.data(), MAX_PACKET_SIZE);
           std::string out;
@@ -682,7 +692,7 @@ void VideoEncoderNode::pull_stream_and_packetize()
           msg->set_qos(0);
           mqtt_client_->publish(msg);
         }
-        
+
         // ===== ROS2 话题发送分支 =====
         else {
           packet_pub_->publish(pkt);
@@ -691,8 +701,7 @@ void VideoEncoderNode::pull_stream_and_packetize()
         sent_window_.emplace_back(now_ns, packet_bytes);
         sent_window_bytes_ += packet_bytes;
 
-        memmove(stream_buffer_.data(),
-                stream_buffer_.data() + PAYLOAD_SIZE,
+        memmove(stream_buffer_.data(), stream_buffer_.data() + PAYLOAD_SIZE,
                 stream_buffer_.size() - PAYLOAD_SIZE);
         stream_buffer_.resize(stream_buffer_.size() - PAYLOAD_SIZE);
       }
@@ -704,39 +713,45 @@ void VideoEncoderNode::pull_stream_and_packetize()
 
         // 尽量对齐到下一个 Annex-B 起始码，减少解码错误持续时间
         for (size_t i = target_drop; i + 4 < stream_buffer_.size(); ++i) {
-          const bool start_code_3 = (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0 &&
-                                     stream_buffer_[i + 2] == 1);
-          const bool start_code_4 = (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0 &&
-                                     stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1);
+          const bool start_code_3 =
+              (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0 &&
+               stream_buffer_[i + 2] == 1);
+          const bool start_code_4 =
+              (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0 &&
+               stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1);
           if (start_code_3 || start_code_4) {
             drop_bytes = i;
             break;
           }
         }
 
-        memmove(
-          stream_buffer_.data(), stream_buffer_.data() + drop_bytes, stream_buffer_.size() - drop_bytes);
+        memmove(stream_buffer_.data(), stream_buffer_.data() + drop_bytes,
+                stream_buffer_.size() - drop_bytes);
         stream_buffer_.resize(stream_buffer_.size() - drop_bytes);
 
         dropped_bytes_ += drop_bytes;
         dropped_events_++;
         if (dropped_events_ % 20 == 1) {
-          RCLCPP_WARN(
-            this->get_logger(),
-            "TX backlog clipped: dropped=%zuB backlog=%zuB total_dropped=%luB events=%u",
-            drop_bytes, stream_buffer_.size(), dropped_bytes_, dropped_events_);
+          RCLCPP_WARN(this->get_logger(),
+                      "TX backlog clipped: dropped=%zuB backlog=%zuB "
+                      "total_dropped=%luB events=%u",
+                      drop_bytes, stream_buffer_.size(), dropped_bytes_,
+                      dropped_events_);
         }
       }
 
       const int64_t telemetry_ns = this->now().nanoseconds();
       if (telemetry_ns - last_telemetry_ns_ > 1000000000LL) {
-        const double window_kbytes = static_cast<double>(sent_window_bytes_) / 1000.0;
-        const double avg_kbytes_per_s = window_kbytes / param_bandwidth_window_s_;
-        RCLCPP_INFO(
-          this->get_logger(),
-          "TX stats: window=%.2f/%.2fkB avg=%.2fkB/s backlog=%zuB dropped=%luB",
-          window_kbytes, static_cast<double>(window_limit_bytes) / 1000.0,
-          avg_kbytes_per_s, stream_buffer_.size(), dropped_bytes_);
+        const double window_kbytes =
+            static_cast<double>(sent_window_bytes_) / 1000.0;
+        const double avg_kbytes_per_s =
+            window_kbytes / param_bandwidth_window_s_;
+        RCLCPP_INFO(this->get_logger(),
+                    "TX stats: window=%.2f/%.2fkB avg=%.2fkB/s backlog=%zuB "
+                    "dropped=%luB",
+                    window_kbytes,
+                    static_cast<double>(window_limit_bytes) / 1000.0,
+                    avg_kbytes_per_s, stream_buffer_.size(), dropped_bytes_);
         last_telemetry_ns_ = telemetry_ns;
       }
 
@@ -746,17 +761,19 @@ void VideoEncoderNode::pull_stream_and_packetize()
   }
 }
 
-void VideoEncoderNode::display_loop()
-{
+void VideoEncoderNode::display_loop() {
   cv::namedWindow("Doorlock Sniper Raw", cv::WINDOW_NORMAL);
   cv::namedWindow("Doorlock Sniper ROI", cv::WINDOW_NORMAL);
   cv::namedWindow("Doorlock Sniper Static", cv::WINDOW_NORMAL);
   cv::namedWindow("Doorlock Sniper", cv::WINDOW_NORMAL);
-  cv::setWindowProperty("Doorlock Sniper Raw", cv::WND_PROP_ASPECT_RATIO, cv::WINDOW_KEEPRATIO);
-  cv::resizeWindow("Doorlock Sniper ROI", param_output_size_, param_output_size_);
-  cv::resizeWindow("Doorlock Sniper Static", param_output_size_, param_output_size_);
+  cv::setWindowProperty("Doorlock Sniper Raw", cv::WND_PROP_ASPECT_RATIO,
+                        cv::WINDOW_KEEPRATIO);
+  cv::resizeWindow("Doorlock Sniper ROI", param_output_size_,
+                   param_output_size_);
+  cv::resizeWindow("Doorlock Sniper Static", param_output_size_,
+                   param_output_size_);
   cv::resizeWindow("Doorlock Sniper", param_output_size_, param_output_size_);
-  
+
   while (display_running_ && rclcpp::ok()) {
     cv::Mat raw_frame;
     cv::Mat roi_frame;
@@ -777,7 +794,7 @@ void VideoEncoderNode::display_loop()
         display_frame_.copyTo(frame);
       }
     }
-    
+
     if (!raw_frame.empty()) {
       cv::imshow("Doorlock Sniper Raw", raw_frame);
     }
@@ -792,39 +809,45 @@ void VideoEncoderNode::display_loop()
     }
     if (param_debug_dump_enable_ && !frame.empty()) {
       display_frame_counter_++;
-      if ((display_frame_counter_ % static_cast<uint64_t>(param_debug_dump_every_n_frames_)) == 0U) {
-        const std::filesystem::path dump_dir = std::filesystem::path(param_debug_dump_dir_) / "encoder";
+      if ((display_frame_counter_ %
+           static_cast<uint64_t>(param_debug_dump_every_n_frames_)) == 0U) {
+        const std::filesystem::path dump_dir =
+            std::filesystem::path(param_debug_dump_dir_) / "encoder";
         std::ostringstream idx;
         idx << std::setw(8) << std::setfill('0') << display_frame_counter_;
         const std::string frame_id = idx.str();
         if (param_debug_dump_save_raw_ && !raw_frame.empty()) {
-          cv::imwrite((dump_dir / ("raw_" + frame_id + ".png")).string(), raw_frame);
+          cv::imwrite((dump_dir / ("raw_" + frame_id + ".png")).string(),
+                      raw_frame);
         }
         if (param_debug_dump_save_roi_ && !roi_frame.empty()) {
-          cv::imwrite((dump_dir / ("roi_" + frame_id + ".png")).string(), roi_frame);
+          cv::imwrite((dump_dir / ("roi_" + frame_id + ".png")).string(),
+                      roi_frame);
         }
         if (param_debug_dump_save_static_ && !static_frame.empty()) {
-          cv::imwrite((dump_dir / ("static_" + frame_id + ".png")).string(), static_frame);
+          cv::imwrite((dump_dir / ("static_" + frame_id + ".png")).string(),
+                      static_frame);
         }
         if (param_debug_dump_save_final_) {
-          cv::imwrite((dump_dir / ("final_" + frame_id + ".png")).string(), frame);
+          cv::imwrite((dump_dir / ("final_" + frame_id + ".png")).string(),
+                      frame);
         }
       }
     }
     cv::waitKey(1);
-    
+
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
   }
-  
+
   cv::destroyWindow("Doorlock Sniper Raw");
   cv::destroyWindow("Doorlock Sniper ROI");
   cv::destroyWindow("Doorlock Sniper Static");
   cv::destroyWindow("Doorlock Sniper");
 }
 
-void VideoEncoderNode::init_mqtt()
-{
-  std::string server = "tcp://" + param_mqtt_ip_ + ":" + std::to_string(param_mqtt_port_);
+void VideoEncoderNode::init_mqtt() {
+  std::string server =
+      "tcp://" + param_mqtt_ip_ + ":" + std::to_string(param_mqtt_port_);
   mqtt_client_ = std::make_unique<mqtt::async_client>(server, param_robot_id_);
 
   mqtt_opts_.set_keep_alive_interval(20);
@@ -838,10 +861,10 @@ void VideoEncoderNode::init_mqtt()
   }
 }
 
-void VideoEncoderNode::init_serial()
-{
-  serial_ctx_ = std::make_shared<drivers::common::IoContext>(1);   // 1 个线程
-  serial_driver_ = std::make_unique<drivers::serial_driver::SerialDriver>(*serial_ctx_);
+void VideoEncoderNode::init_serial() {
+  serial_ctx_ = std::make_shared<drivers::common::IoContext>(1); // 1 个线程
+  serial_driver_ =
+      std::make_unique<drivers::serial_driver::SerialDriver>(*serial_ctx_);
 
   auto fc = drivers::serial_driver::FlowControl::NONE;
   auto pt = drivers::serial_driver::Parity::NONE;
@@ -860,11 +883,8 @@ void VideoEncoderNode::init_serial()
   }
 }
 
-PacketHeader VideoEncoderNode::make_header(
-  uint64_t seq,
-  uint64_t ts,
-  uint16_t size)
-{
+PacketHeader VideoEncoderNode::make_header(uint64_t seq, uint64_t ts,
+                                           uint16_t size) {
   PacketHeader h;
   h.sequence_id = seq;
   h.timestamp_ns = ts;

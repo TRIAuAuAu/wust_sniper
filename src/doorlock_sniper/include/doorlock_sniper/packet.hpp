@@ -3,23 +3,23 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <vector>
-#include <cstring> 
+
 namespace doorlock_sniper {
 
+// 固定大小的串口发送包
 struct SerialSendPacket {
-  uint16_t length;                        // 有效负载长度 (≤ 320的有效数据)
-  uint8_t  data[320];                     // Protobuf 序列化数据
+  uint8_t data[320]; // 用于存放 Protobuf 序列化数据 + 尾部填充 0x00
 } __attribute__((packed));
 
+// 将结构体转换为可发送的 vector（固定长度）
 inline std::vector<uint8_t> toVector(const SerialSendPacket &pkt) {
-  // 计算实际需要发送的字节数：length 字段(2) + 有效数据(length)
-  size_t total_size = sizeof(uint16_t) + pkt.length;
-  std::vector<uint8_t> vec(total_size);
-  std::memcpy(vec.data(), &pkt.length, sizeof(uint16_t));
-  std::memcpy(vec.data() + sizeof(uint16_t), pkt.data, pkt.length);
+  std::vector<uint8_t> vec(sizeof(SerialSendPacket));
+  std::memcpy(vec.data(), pkt.data, sizeof(SerialSendPacket));
   return vec;
 }
 
 } // namespace doorlock_sniper
-#endif
+
+#endif // PACKET_HPP_

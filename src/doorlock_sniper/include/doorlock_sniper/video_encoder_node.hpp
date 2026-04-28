@@ -1,25 +1,24 @@
 #ifndef DOORLOCK_SNIPER_VIDEO_ENCODER_NODE_HPP_
 #define DOORLOCK_SNIPER_VIDEO_ENCODER_NODE_HPP_
 
-#include <gst/gst.h>
+#include "doorlock_sniper/msg/video_packet.hpp"
+#include "packet.hpp"
+#include <atomic>
+#include <deque>
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
+#include <gst/gst.h>
+#include <mqtt/async_client.h>
+#include <mqtt/connect_options.h>
+#include <mutex>
 #include <opencv2/opencv.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
-#include <thread>
-#include <mutex>
-#include <atomic>
-#include <vector>
-#include <deque>
-#include <mqtt/async_client.h>
-#include <mqtt/connect_options.h>
 #include <serial_driver/serial_driver.hpp>
-#include "doorlock_sniper/msg/video_packet.hpp"
-#include "packet.hpp"
+#include <thread>
+#include <vector>
 
-namespace doorlock_sniper
-{
+namespace doorlock_sniper {
 
 #pragma pack(push, 1)
 struct PacketHeader {
@@ -30,52 +29,50 @@ struct PacketHeader {
 #pragma pack(pop)
 static_assert(sizeof(PacketHeader) == 18);
 constexpr int MAX_PACKET_SIZE = 300;
-constexpr int HEADER_SIZE = sizeof(PacketHeader); // 18
+constexpr int HEADER_SIZE = sizeof(PacketHeader);           // 18
 constexpr int PAYLOAD_SIZE = MAX_PACKET_SIZE - HEADER_SIZE; // 282
 
-class VideoEncoderNode : public rclcpp::Node
-{
+class VideoEncoderNode : public rclcpp::Node {
 public:
-  explicit VideoEncoderNode(const rclcpp::NodeOptions & options);
+  explicit VideoEncoderNode(const rclcpp::NodeOptions &options);
   ~VideoEncoderNode() override;
 
 private:
   void initialize_gstreamer();
   void shutdown_gstreamer();
-  
+
   void image_callback(const sensor_msgs::msg::Image::SharedPtr msg);
-  cv::Mat preprocess_image(
-    const cv::Mat & input,
-    cv::Mat * roi_downsample = nullptr,
-    cv::Mat * static_removed = nullptr);
-  
-  void push_frame_to_gstreamer(const cv::Mat & frame);
+  cv::Mat preprocess_image(const cv::Mat &input,
+                           cv::Mat *roi_downsample = nullptr,
+                           cv::Mat *static_removed = nullptr);
+
+  void push_frame_to_gstreamer(const cv::Mat &frame);
   void pull_stream_and_packetize();
-  
+
   void display_loop();
 
-  GstElement * pipeline_;
-  GstElement * appsrc_;
-  GstElement * appsink_;
-  GstBus * bus_;
-  
+  GstElement *pipeline_;
+  GstElement *appsrc_;
+  GstElement *appsink_;
+  GstBus *bus_;
+
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Publisher<doorlock_sniper::msg::VideoPacket>::SharedPtr packet_pub_;
-  
+
   // 统计与状态（调整顺序，与初始化列表一致）
-  uint64_t packet_sequence_id_ = 0;   // 移到这里，先声明
+  uint64_t packet_sequence_id_ = 0; // 移到这里，先声明
   uint32_t frame_count_ = 0;
-  
+
   // 显示线程
   std::thread display_thread_;
-  std::atomic<bool> display_running_;  // 后声明
-  
+  std::atomic<bool> display_running_; // 后声明
+
   std::mutex frame_mutex_;
   cv::Mat display_raw_frame_;
   cv::Mat display_roi_frame_;
   cv::Mat display_static_frame_;
   cv::Mat display_frame_;
-  
+
   // 流式分包缓冲区
   std::vector<uint8_t> stream_buffer_;
   std::deque<std::pair<int64_t, size_t>> sent_window_;
@@ -93,7 +90,7 @@ private:
   cv::Mat background_gray_f32_;
   cv::Mat motion_erode_kernel_;
   cv::Mat motion_dilate_kernel_;
-  
+
   // 参数
   int param_crop_size_ = 800;
   int param_output_size_ = 400;
@@ -123,7 +120,6 @@ private:
   std::string param_x264_preset_ = "auto";
   std::string param_debug_dump_dir_ = "sniper_debug_imgs";
 
-
   // MQTT 相关
   std::unique_ptr<mqtt::async_client> mqtt_client_;
   mqtt::connect_options mqtt_opts_;
@@ -131,18 +127,15 @@ private:
   std::string param_mqtt_ip_;
   int param_mqtt_port_;
   std::string param_mqtt_topic_;
-  std::string param_robot_id_; 
+  std::string param_robot_id_;
   void init_mqtt();
-  PacketHeader make_header(
-  uint64_t seq,
-  uint64_t ts,
-  uint16_t size);
-  
+  PacketHeader make_header(uint64_t seq, uint64_t ts, uint16_t size);
+
   // 串口相关
   bool param_serial_output_ = false;
   std::string param_serial_port_;
   int param_baud_rate_ = 115200;
-  std::shared_ptr<drivers::common::IoContext> serial_ctx_;            // 管理 asio
+  std::shared_ptr<drivers::common::IoContext> serial_ctx_; // 管理 asio
   std::unique_ptr<drivers::serial_driver::SerialDriver> serial_driver_;
   std::unique_ptr<drivers::serial_driver::SerialPortConfig> serial_config_;
   void init_serial();

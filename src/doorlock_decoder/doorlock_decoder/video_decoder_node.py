@@ -78,6 +78,11 @@ class VideoDecoderNode(Node):
         self.gap_count = 0
         self.last_seq = None
 
+        # ---- 延迟统计 ----
+        self.latency_sum = 0.0
+        self.latency_count = 0
+        self.latency_print_interval = 50
+
         # ---- 显示队列 ----
         if self.display:
             self.frame_queue = queue.Queue(maxsize=3)
@@ -136,7 +141,24 @@ class VideoDecoderNode(Node):
         if len(payload_282) != 282:
             self.get_logger().warn(f'Invalid payload size: {len(payload_282)} (expected 282)')
             return
+        
+        # ---- 计算端到端延迟 ----
+        now = self.get_clock().now()                     # 解码端接收时间（ROS 时间）
+        send_time = rclpy.time.Time(nanoseconds=ts_ns)   # 编码端发送时间
+        latency = now - send_time
+        lat_ms = latency.nanoseconds / 1e6                # 转换为毫秒
 
+        # ---- 累加统计 ----
+        self.latency_sum += lat_ms
+        self.latency_count += 1
+        if self.latency_count >= self.latency_print_interval:
+            avg_lat = self.latency_sum / self.latency_count
+            self.get_logger().info(
+                f'Avg latency: {avg_lat:.2f} ms (over {self.latency_count} packets)')
+            self.latency_sum = 0.0
+            self.latency_count = 0
+
+        # ---- 序列号检查 ----
         self.packet_count += 1
         if self.last_seq is not None and seq != self.last_seq + 1:
             self.gap_count += 1
