@@ -304,12 +304,12 @@ void VideoEncoderNode::initialize_gstreamer() {
   }
 
   g_object_set(G_OBJECT(encoder), "bitrate", param_target_bitrate_,
-               "speed-preset", speed_preset, "tune", 0x00000004, // zerolatency
+               "speed-preset", speed_preset, "tune", 0, // zerolatency 0x00000004
                "byte-stream", TRUE, "key-int-max",
-               param_output_fps_, // I帧间隔 2 秒（100帧）
+               2*param_output_fps_, // I帧间隔
                "bframes", 0, "rc-lookahead", 0, "sync-lookahead", 0,
                "sliced-threads", TRUE, "ref", 1, "aud", TRUE, "option-string",
-               "repeat-headers=1:scenecut=0:force-cfr=1", "pass", 0, nullptr);
+               "repeat-headers=1:scenecut=0:force-cfr=1", "pass", 1, nullptr);
 
   // 确保下游看到可流式重组的 Annex-B 字节流，并周期重复 SPS/PPS
   g_object_set(G_OBJECT(parser), "config-interval", -1, "disable-passthrough",
@@ -635,7 +635,6 @@ void VideoEncoderNode::pull_stream_and_packetize() {
 
         doorlock_sniper::msg::VideoPacket pkt;
         pkt.sequence_id = packet_sequence_id_++;
-        pkt.timestamp_ns = now_ns;
 
         size_t copy_size =
             std::min(stream_buffer_.size(), (size_t)PAYLOAD_SIZE);
@@ -645,8 +644,7 @@ void VideoEncoderNode::pull_stream_and_packetize() {
 
         // ===== 构建 300 字节的有效载荷 (PacketHeader + H.264 数据) =====
         std::vector<uint8_t> mqtt_buf(MAX_PACKET_SIZE);
-        PacketHeader hdr = make_header(pkt.sequence_id, pkt.timestamp_ns,
-                                       static_cast<uint16_t>(PAYLOAD_SIZE));
+        PacketHeader hdr = make_header(pkt.sequence_id);
         std::memcpy(mqtt_buf.data(), &hdr, HEADER_SIZE);
         std::memcpy(mqtt_buf.data() + HEADER_SIZE, pkt.data.data(),
                     PAYLOAD_SIZE);
@@ -882,15 +880,12 @@ void VideoEncoderNode::init_serial() {
     serial_driver_.reset();
   }
 }
-
-PacketHeader VideoEncoderNode::make_header(uint64_t seq, uint64_t ts,
-                                           uint16_t size) {
+PacketHeader VideoEncoderNode::make_header(uint64_t seq) {
   PacketHeader h;
   h.sequence_id = seq;
-  h.timestamp_ns = ts;
-  h.payload_size = size;
   return h;
 }
+
 } // namespace doorlock_sniper
 
 RCLCPP_COMPONENTS_REGISTER_NODE(doorlock_sniper::VideoEncoderNode)

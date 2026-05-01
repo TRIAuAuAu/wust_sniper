@@ -29,11 +29,20 @@ video_encoder:
     output_size: 300                   # 编码输出分辨率
 
     #  运动检测参数
-    motion_threshold: 14               # 运动检测阈值
-    motion_erode_px: 2                 # 腐蚀像素
-    motion_dilate_px: 6                # 膨胀像素
-    motion_trail_frames: 20            # 拖影历史帧数（用于运动轨迹）
-    trail_disable_motion_ratio: 0.15   # 当运动比例超过该值时关闭拖影
+    motion_threshold: 14               # 运动检测阈值：像素亮度变化超过此值判定为运动（越低越敏感）
+                                       # 影响：阈值越低，暗物体/慢运动越可能产生拖影；过高则拖影少
+
+    motion_erode_px: 2                 # 运动掩膜腐蚀（缩小运动区域，消除噪声）
+                                       # 影响：值越大拖影区域越“内收”，可减少杂乱拖影；太小拖影会扩散到背景
+
+    motion_dilate_px: 6                # 运动掩膜膨胀（扩大运动区域，填补孔洞）
+                                       # 影响：值越大拖影轮廓越“肥厚”，利于暗物体产生连续拖影；太大会导致拖影粘连
+
+    motion_trail_frames: 20            # 拖影历史帧数：保留最近N帧在运动区域做最大值叠加
+                                       # 影响：越大拖影尾巴越长（50fps 下 20 帧 ≈ 0.4 秒），设为0则完全关闭拖影
+
+    trail_disable_motion_ratio: 0.01   # 拖影抑制运动比例阈值：当画面中运动像素占比超过该值时，自动关闭拖影
+                                       # 影响：避免镜头大范围移动时满屏残影。值越小越保守，设为1.0则永不抑制
 
     #  背景建模
     bg_update_alpha: 0.01              # 背景更新速度
@@ -52,12 +61,12 @@ video_encoder:
     # 最大发送延迟
     max_tx_delay_s: 0.5
 
-    #  MQTT 参数
+    #  MQTT 参数 (调试用：127.0.0.1)
     use_mqtt: true                      # 是否使用 MQTT 发送数据
     mqtt_ip: 127.0.0.1 # 192.168.12.1   # MQTT 服务器 IP
     mqtt_port: 3333                     # MQTT 服务器端口
     mqtt_topic: "CustomByteBlock"       # MQTT 话题  
-    robot_id: "1"                       # 机器人 ID（用于 MQTT 消息）
+    robot_id: "mqtt"                    # 机器人 ID（用于 MQTT 消息）
     # 机器人ID：
     # 红：“1”
     # 蓝：“101”
@@ -90,7 +99,9 @@ video_decoder:
     mqtt_ip: 127.0.0.1 # 192.168.12.1
     mqtt_port: 3333
     mqtt_topic: "CustomByteBlock"
-    robot_id: "0x0101"
+    robot_id: "1"
     # 机器人ID：
-    # 红：“0x0101”
-    # 蓝：“0x0165”
+    # 红：“1”
+    # 蓝：“101”
+
+    enable_game_status_print: false  # 是否打印游戏状态（用于调试）

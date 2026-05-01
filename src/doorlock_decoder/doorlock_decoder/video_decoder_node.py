@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-# 移除顶层导入 VideoPacket 和 QoS（改为按需导入）
+import time
 import av
 import cv2
 import threading
@@ -15,8 +15,16 @@ from . import video_stream_pb2
 
 class VideoDecoderNode(Node):
     def __init__(self):
-        super().__init__('video_decoder_node')
+        super().__init__('video_decoder_node')\
         
+        # ---- debug ----
+        self.declare_parameter('enable_game_status_print', False)
+        self.enable_game_status_print = self.get_parameter('enable_game_status_print').value
+        self.declare_parameter('mqtt_game_status_topic', 'GameStatus')
+        self.game_status_topic = self.get_parameter('mqtt_game_status_topic').value
+        self.last_game_status_print_time = 0.0          # 上次打印时间
+        self.last_game_status_str = ""                  # 上次状态内容的哈希/字符串
+
         # ---- 通用参数 ----
         self.declare_parameter('display', True)
         self.declare_parameter('width', 400)
@@ -79,9 +87,7 @@ class VideoDecoderNode(Node):
         self.last_seq = None
 
         # ---- 延迟统计 ----
-        self.latency_sum = 0.0
-        self.latency_count = 0
-        self.latency_print_interval = 50
+        self.latest_latency_ms = 0.0
 
         # ---- 显示队列 ----
         if self.display:
@@ -137,28 +143,11 @@ class VideoDecoderNode(Node):
             self.get_logger().info(f'Decoded {self.frame_count} frames')
 
     # ==================== 通用数据注入（ROS2/MQTT共用） ====================
-    def _process_video_chunk(self, seq: int, ts_ns: int, payload_282: bytes):
-        if len(payload_282) != 282:
-            self.get_logger().warn(f'Invalid payload size: {len(payload_282)} (expected 282)')
+    def _process_video_chunk(self, seq: int, payload: bytes):
+        if len(payload) != 292:
+            self.get_logger().warn(f'Invalid payload size: {len(payload)} (expected 292)')
             return
-        
-        # ---- 计算端到端延迟 ----
-        now = self.get_clock().now()                     # 解码端接收时间（ROS 时间）
-        send_time = rclpy.time.Time(nanoseconds=ts_ns)   # 编码端发送时间
-        latency = now - send_time
-        lat_ms = latency.nanoseconds / 1e6                # 转换为毫秒
 
-        # ---- 累加统计 ----
-        self.latency_sum += lat_ms
-        self.latency_count += 1
-        if self.latency_count >= self.latency_print_interval:
-            avg_lat = self.latency_sum / self.latency_count
-            self.get_logger().info(
-                f'Avg latency: {avg_lat:.2f} ms (over {self.latency_count} packets)')
-            self.latency_sum = 0.0
-            self.latency_count = 0
-
-        # ---- 序列号检查 ----
         self.packet_count += 1
         if self.last_seq is not None and seq != self.last_seq + 1:
             self.gap_count += 1
@@ -168,7 +157,7 @@ class VideoDecoderNode(Node):
         self.last_seq = seq
 
         try:
-            parsed_packets = self.codec.parse(payload_282)
+            parsed_packets = self.codec.parse(payload)
             self.parsed_packet_count += len(parsed_packets)
             for packet in parsed_packets:
                 for frame in self.codec.decode(packet):
@@ -183,13 +172,13 @@ class VideoDecoderNode(Node):
 
     # ==================== ROS2 回调 ====================
     def _ros2_packet_callback(self, msg):
-        self._process_video_chunk(msg.sequence_id, msg.timestamp_ns, bytes(msg.data))
+        self._process_video_chunk(msg.sequence_id, bytes(msg.data))
 
     # ==================== MQTT 初始化 ====================
     def _init_mqtt(self):
         self.mqtt_client = mqtt.Client(client_id=self.robot_id, protocol=mqtt.MQTTv311)
         self.mqtt_client.on_connect = self._on_mqtt_connect
-        self.mqtt_client.on_message = self._on_mqtt_message
+        # self.mqtt_client.on_message = self._on_mqtt_message
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
 
         try:
@@ -204,15 +193,64 @@ class VideoDecoderNode(Node):
             self.get_logger().info('MQTT connected')
             client.subscribe(self.mqtt_topic, qos=0)
             self.get_logger().info(f'Subscribed to {self.mqtt_topic}')
+            client.message_callback_add(self.mqtt_topic, self._on_video_message)
+
+            # 仅当启用游戏状态打印时才订阅
+            if self.enable_game_status_print:
+                client.subscribe(self.game_status_topic, qos=0)
+                client.message_callback_add(self.game_status_topic, self._on_game_status_message)
+                self.get_logger().info(f'Subscribed to game status: {self.game_status_topic}')
+            else:
+                self.get_logger().info('GameStatus printing disabled, skip subscription')
+
+            self.get_logger().info(f'Video subscribed: {self.mqtt_topic}')
+            
         else:
             self.get_logger().error(f'MQTT connection failed, rc={rc}')
 
     def _on_mqtt_disconnect(self, client, userdata, rc):
         self.get_logger().warn(f'MQTT disconnected (rc={rc}), auto-reconnect enabled')
+    
+    def _on_game_status_message(self, client, userdata, msg):
+        """解析 GameStatus 并按需打印（限频）"""
+        try:
+            status = video_stream_pb2.GameStatus()
+            status.ParseFromString(msg.payload)
 
-    def _on_mqtt_message(self, client, userdata, msg):
+            # 构造本次状态的关键字段组合（用作变化检测）
+            status_str = (
+                f"{status.current_round},{status.total_rounds},"
+                f"{status.red_score},{status.blue_score},"
+                f"{status.current_stage},{status.stage_countdown_sec},"
+                f"{status.stage_elapsed_sec},{status.is_paused}"
+            )
+
+            now = time.time()
+            # 条件：距离上次打印超过n秒，或状态发生变化时立即打印
+            if (now - self.last_game_status_print_time > 10.0 or 
+                status_str != self.last_game_status_str):
+                
+                self.get_logger().info(
+                    '=== Game Status Update ===\n'
+                    f'  Round:       {status.current_round} / {status.total_rounds}\n'
+                    f'  Score:       Red={status.red_score}  Blue={status.blue_score}\n'
+                    f'  Stage:       {status.current_stage} '
+                    f'(Countdown: {status.stage_countdown_sec}s, '
+                    f'Elapsed: {status.stage_elapsed_sec}s)\n'
+                    f'  Paused:      {status.is_paused}'
+                )
+                self.last_game_status_print_time = now
+                self.last_game_status_str = status_str
+
+        except Exception as e:
+            self.get_logger().error(f'Failed to parse GameStatus: {e}')
+    
+    def _on_video_message(self, client, userdata, msg):
         """使用 Protobuf 解析 CustomByteBlock 消息"""
         try:
+            # 接收时间
+            # recv_ns = time.time_ns()
+
             block = video_stream_pb2.CustomByteBlock()
             block.ParseFromString(msg.payload)
             raw_data = block.data  # 300 字节
@@ -221,16 +259,15 @@ class VideoDecoderNode(Node):
                 self.get_logger().warn(f'Unexpected data size: {len(raw_data)} (expected 300)')
                 return
 
-            # 解析头部 (18 字节) + H.264 负载 (282 字节)
-            header = raw_data[:18]
-            seq, ts_ns, payload_size = struct.unpack('<Q Q H', header)
+            # 解析头部 (8 字节) + H.264 负载 (292字节)
+            header = raw_data[:8]
+            seq, = struct.unpack('<Q', header) 
+            payload = raw_data[8:]  
 
-            if payload_size != 282:
-                self.get_logger().warn(f'Wrong payload size in header: {payload_size}')
-                return
-
-            payload = raw_data[18:18+282]
-            self._process_video_chunk(seq, ts_ns, payload)
+            # 计算延迟（毫秒）
+            # latency_ns = recv_ns - ts_ns
+            # self.latest_latency_ms = latency_ns / 1e
+            self._process_video_chunk(seq, payload)
 
         except Exception as e:
             self.get_logger().error(f'MQTT message parse error: {e}')
@@ -275,6 +312,12 @@ class VideoDecoderNode(Node):
                     )
                     img_disp = self._sharpen_center(img_disp)
                     self._draw_overlay(img_disp)
+
+                    # 显示延迟
+                    # lat_text = f"Lat: {self.latest_latency_ms:.1f} ms"
+                    # cv2.putText(img_disp, lat_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    #             0.7, (0, 255, 0), 2)
+                    
                     cv2.imshow('Doorlock Decoder', img_disp)
                     if self.debug_dump_enable and self.debug_dump_save_decoder:
                         self.display_frame_counter += 1
@@ -324,7 +367,6 @@ class VideoDecoderNode(Node):
                 pass
             self.display_thread.join(timeout=1.0)
         super().destroy_node()
-
 
 def main(args=None):
     rclpy.init(args=args)

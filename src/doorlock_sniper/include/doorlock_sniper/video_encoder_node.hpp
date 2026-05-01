@@ -23,14 +23,12 @@ namespace doorlock_sniper {
 #pragma pack(push, 1)
 struct PacketHeader {
   uint64_t sequence_id;
-  uint64_t timestamp_ns;
-  uint16_t payload_size;
 };
 #pragma pack(pop)
-static_assert(sizeof(PacketHeader) == 18);
+static_assert(sizeof(PacketHeader) == 8);   // 8+2=10，对齐设为1
 constexpr int MAX_PACKET_SIZE = 300;
-constexpr int HEADER_SIZE = sizeof(PacketHeader);           // 18
-constexpr int PAYLOAD_SIZE = MAX_PACKET_SIZE - HEADER_SIZE; // 282
+constexpr int HEADER_SIZE = sizeof(PacketHeader);           // 10
+constexpr int PAYLOAD_SIZE = MAX_PACKET_SIZE - HEADER_SIZE; // 292
 
 class VideoEncoderNode : public rclcpp::Node {
 public:
@@ -129,7 +127,7 @@ private:
   std::string param_mqtt_topic_;
   std::string param_robot_id_;
   void init_mqtt();
-  PacketHeader make_header(uint64_t seq, uint64_t ts, uint16_t size);
+  PacketHeader make_header(uint64_t seq);
 
   // 串口相关
   bool param_serial_output_ = false;

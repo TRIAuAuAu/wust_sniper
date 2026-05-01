@@ -117,6 +117,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        encoder_container,
+        # encoder_container,
         decoder_node
     ])
