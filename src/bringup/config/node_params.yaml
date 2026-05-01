@@ -52,7 +52,7 @@ video_encoder:
     center_clear_size: 150
 
     # 是否强制灰度图(只保留中间受保护区域的色彩)
-    force_monochrome: true
+    force_monochrome: false
 
     #  带宽控制
     bandwidth_limit_kbytes: 15.0       # 最大带宽（kB/s）

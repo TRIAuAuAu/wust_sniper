@@ -289,7 +289,7 @@ class VideoDecoderNode(Node):
         # 提取中心 ROI
         roi = img[y0:y1, x0:x1]
         # Unsharp Mask
-        blurred = cv2.GaussianBlur(roi, (0, 0), 0.8)   # 小 sigma 模糊
+        blurred = cv2.GaussianBlur(roi, (0, 0), 0.5)   # 小 sigma 模糊
         sharpened = cv2.addWeighted(roi, 1.5, blurred, -0.5, 0)
         # 写回原图
         img[y0:y1, x0:x1] = sharpened
